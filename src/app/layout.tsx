@@ -17,6 +17,7 @@ import OnboardingTutorial from "@/components/OnboardingTutorial";
 import XPToast from "@/components/XPToast";
 import SessionRecapWrapper from "@/components/SessionRecapWrapper";
 import BadgeCelebration from "@/components/BadgeCelebration";
+import { Analytics } from "@vercel/analytics/next";
 
 const figtree = Figtree({
   subsets: ["latin"],
@@ -120,6 +121,7 @@ export default function RootLayout({
             </AuthProvider>
           </LocaleProvider>
         </UIProvider>
+        <Analytics />
       </body>
     </html>
   );
