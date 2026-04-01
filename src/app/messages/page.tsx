@@ -624,7 +624,7 @@ function MessagesContent() {
                 <div style={{ flex: 1, display: 'grid', gridTemplateColumns: `${SIDEBAR_W}px 1fr`, minHeight: 0, overflow: 'hidden' }}>
 
                     {/* ═══════════════════ SIDEBAR ═══════════════════ */}
-                    <div style={{ display: 'flex', flexDirection: 'column', background: C.sidebar, backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', borderRight: `1px solid ${C.border}`, overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', background: C.sidebar, backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', borderRight: `1px solid ${C.border}`, overflow: 'hidden' }}>
 
                         {/* Header */}
                         <div style={{ padding: '20px 14px 12px', background: C.sidebarHead, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
