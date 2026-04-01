@@ -1,0 +1,204 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ──
+    function isAuth() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return isAuth() && request.auth.uid == uid;
+    }
+    // Check if user is a member of an objective (membership doc id = "{userId}_{objectiveId}")
+    function isObjectiveMember(objectiveId) {
+      return isAuth() && exists(/databases/$(database)/documents/memberships/$(request.auth.uid + '_' + objectiveId));
+    }
+    // Check if user is a member of a project
+    function isProjectMember(projectId) {
+      return isAuth() && exists(/databases/$(database)/documents/project_memberships/$(request.auth.uid + '_' + projectId));
+    }
+
+    // ── Users ──
+    match /users/{userId} {
+      // Public profiles readable by any authenticated user; own profile writable
+      allow read: if isAuth();
+      allow create: if isOwner(userId);
+      allow update, delete: if isOwner(userId);
+
+      // Notifications — only the owner can read/write their own notifications
+      match /notifications/{notifId} {
+        allow read, delete: if isOwner(userId);
+        // Any authenticated user can create a notification for another user (e.g. nudges, friend requests)
+        allow create: if isAuth();
+        allow update: if isOwner(userId);
+      }
+
+      // Direct messages subcollection
+      match /messages/{msgId} {
+        allow read: if isOwner(userId);
+        allow create: if isAuth();
+        allow update, delete: if isOwner(userId);
+      }
+    }
+
+    // ── Email index ──
+    match /email_index/{email} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if false;
+    }
+
+    // ── Objectives ──
+    match /objectives/{objectiveId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if isAuth() && (
+        resource.data.owner_id == request.auth.uid || isObjectiveMember(objectiveId)
+      );
+
+      // Subcollections — only members can read/write
+      match /{subcollection}/{docId} {
+        allow read: if isObjectiveMember(objectiveId) || resource == null;
+        allow create: if isObjectiveMember(objectiveId);
+        allow update, delete: if isObjectiveMember(objectiveId);
+      }
+
+      // Nested subcollections (e.g. tasks/{id}/comments)
+      match /{sub1}/{docId1}/{sub2}/{docId2} {
+        allow read, write: if isObjectiveMember(objectiveId);
+      }
+    }
+
+    // ── Objective Memberships ──
+    match /memberships/{membershipId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      // Only the member themselves or objective owner can modify
+      allow update, delete: if isAuth() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.owner_id == request.auth.uid
+      );
+    }
+
+    // ── Projects ──
+    match /projects/{projectId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if isAuth() && (
+        resource.data.owner_id == request.auth.uid || isProjectMember(projectId)
+      );
+
+      // Subcollections — only members can read/write
+      match /{subcollection}/{docId} {
+        allow read: if isProjectMember(projectId) || resource == null;
+        allow create: if isProjectMember(projectId);
+        allow update, delete: if isProjectMember(projectId);
+      }
+
+      // Nested subcollections (e.g. tasks/{id}/comments)
+      match /{sub1}/{docId1}/{sub2}/{docId2} {
+        allow read, write: if isProjectMember(projectId);
+      }
+    }
+
+    // ── Project Memberships ──
+    match /project_memberships/{membershipId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if isAuth() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.owner_id == request.auth.uid
+      );
+    }
+
+    // ── Friendships ──
+    match /friendships/{friendshipId} {
+      allow read: if isAuth();
+      // Only participants can create/modify
+      allow create: if isAuth();
+      allow update, delete: if isAuth() && (
+        resource.data.from_uid == request.auth.uid ||
+        resource.data.to_uid == request.auth.uid
+      );
+    }
+
+    // ── Accountability Pairs ──
+    match /accountability_pairs/{pairId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if isAuth() && (
+        resource.data.user1_id == request.auth.uid ||
+        resource.data.user2_id == request.auth.uid
+      );
+
+      // Messages & coworking subcollections
+      match /{subcollection}/{docId} {
+        allow read, write: if isAuth();
+      }
+    }
+
+    // ── Teammate Requests ──
+    match /teammate_requests/{requestId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if isAuth();
+
+      // Conversations, sessions, messages
+      match /{sub1}/{docId1} {
+        allow read, write: if isAuth();
+      }
+      match /{sub1}/{docId1}/{sub2}/{docId2} {
+        allow read, write: if isAuth();
+      }
+    }
+
+    // ── Calls (WebRTC signaling) ──
+    match /calls/{callId} {
+      allow read, write: if isAuth();
+
+      match /callerCandidates/{candidateId} {
+        allow read, write: if isAuth();
+      }
+      match /calleeCandidates/{candidateId} {
+        allow read, write: if isAuth();
+      }
+    }
+
+    // ── Presence ──
+    match /presence_global/{userId} {
+      allow read: if isAuth();
+      allow write: if isOwner(userId);
+    }
+
+    // ── Notifications (top-level, if used) ──
+    match /notifications/{notifId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if isAuth();
+    }
+
+    // ── Blocks ──
+    match /blocks/{blockId} {
+      allow read: if isAuth() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.blocked_user_id == request.auth.uid
+      );
+      allow create: if isAuth() && request.resource.data.user_id == request.auth.uid;
+      allow delete: if isAuth() && resource.data.user_id == request.auth.uid;
+      allow update: if false;
+    }
+
+    // ── Reports ──
+    match /reports/{reportId} {
+      allow create: if isAuth() && request.resource.data.reporter_id == request.auth.uid;
+      allow read, update, delete: if false;
+    }
+
+    // ── Session Logs (Pomodoro history) ──
+    match /session_logs/{logId} {
+      allow read: if isAuth() && resource.data.user_id == request.auth.uid;
+      allow create: if isAuth() && request.resource.data.user_id == request.auth.uid;
+      allow update, delete: if isAuth() && resource.data.user_id == request.auth.uid;
+    }
+  }
+}

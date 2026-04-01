@@ -1,0 +1,25 @@
+{
+    "name": "BrilliPlan — Collaborative Goal Setting",
+    "short_name": "BrilliPlan",
+    "description": "Atteignez vos objectifs ensemble. Plateforme collaborative de productivité.",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#0b0b0d",
+    "theme_color": "#c8a960",
+    "orientation": "any",
+    "categories": ["productivity", "education", "social"],
+    "icons": [
+        {
+            "src": "/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any maskable"
+        }
+    ]
+}
