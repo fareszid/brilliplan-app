@@ -35,7 +35,6 @@ export default function XPToast() {
                         background: 'linear-gradient(135deg, rgba(94,234,212,0.12), rgba(94,234,212,0.04))',
                         border: '1px solid rgba(94,234,212,0.25)',
                         backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
-                        WebkitBackdropFilter: 'blur(16px)',
                         boxShadow: '0 8px 32px rgba(0,0,0,0.4), 0 0 20px rgba(94,234,212,0.1)',
                         cursor: 'pointer',
                     }}

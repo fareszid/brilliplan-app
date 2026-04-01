@@ -161,7 +161,6 @@ export default function BadgeCelebration() {
                         justifyContent: 'center',
                         background: 'rgba(4,4,6,0.85)',
                         backdropFilter: 'blur(20px) saturate(1.4)', WebkitBackdropFilter: 'blur(20px) saturate(1.4)',
-                        WebkitBackdropFilter: 'blur(20px) saturate(1.4)',
                         cursor: 'pointer',
                     }}
                 >
