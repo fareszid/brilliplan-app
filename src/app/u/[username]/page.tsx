@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { db } from '@/lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
-import { UserProfileView } from '@/app/user/[uid]/page';
+import { UserProfileView } from '@/components/UserProfileView';
 
 export default function UsernameProfile() {
     const { username } = useParams<{ username: string }>();
