@@ -724,6 +724,32 @@ function ProjectDetailContent() {
     }, [id, user, router]);
 
 
+    // Auto-transition: complete expired active sprints, activate next planning sprint
+    useEffect(() => {
+        if (!id || sprints.length === 0) return;
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const expiredActive = sprints.filter(s => s.status === 'active' && new Date(s.end_date) < today);
+        if (expiredActive.length === 0) return;
+        (async () => {
+            for (const s of expiredActive) {
+                // Calculate velocity before completing
+                const tasksSnap = await getDocs(collection(db, 'projects', id as string, 'sprints', s.id, 'tasks'));
+                const velocity = tasksSnap.docs.filter(d => d.data().completed).reduce((acc, d) => acc + (d.data().story_points || 1), 0);
+                await updateDoc(doc(db, 'projects', id as string, 'sprints', s.id), { status: 'completed', velocity });
+            }
+            // Activate the next planning sprint whose dates include today or are in the future
+            const noActive = !sprints.some(s => s.status === 'active' && !expiredActive.includes(s));
+            if (noActive) {
+                const nextPlanning = sprints
+                    .filter(s => s.status === 'planning' && new Date(s.end_date) >= today)
+                    .sort((a, b) => new Date(a.start_date).getTime() - new Date(b.start_date).getTime())[0];
+                if (nextPlanning) {
+                    await updateDoc(doc(db, 'projects', id as string, 'sprints', nextPlanning.id), { status: 'active' });
+                }
+            }
+        })();
+    }, [id, sprints]);
+
     // Auto-select active (or first) sprint when sprints load
     useEffect(() => {
         if (sprints.length === 0 || selectedSprintId) return;
@@ -2346,12 +2372,16 @@ function ProjectDetailContent() {
         try {
             const mem = memberships.find((m: any) => m.user_id === user.uid);
             const hasActive = sprints.some(s => s.status === 'active');
+            const endDate = new Date(newSprintForm.end_date);
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            // If end date is in the past, mark as completed
+            const status = endDate < today ? 'completed' : (hasActive ? 'planning' : 'active');
             const docRef = await addDoc(collection(db, 'projects', id as string, 'sprints'), {
                 title: newSprintForm.title,
                 goal: newSprintForm.goal,
                 start_date: newSprintForm.start_date,
                 end_date: newSprintForm.end_date,
-                status: hasActive ? 'planning' : 'active',
+                status,
                 created_at: serverTimestamp(),
                 created_by: user.uid,
                 created_by_name: mem?.full_name || user.email?.split('@')[0] || 'Membre',
@@ -2430,6 +2460,11 @@ function ProjectDetailContent() {
     };
 
     const handleActivateSprint = async (sprintId: string) => {
+        const sprint = sprints.find(s => s.id === sprintId);
+        if (!sprint) return;
+        const endDate = new Date(sprint.end_date);
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        if (endDate < today) return; // Can't activate an expired sprint
         // Deactivate currently active sprint first
         const activeS = sprints.find(s => s.status === 'active');
         if (activeS) await updateDoc(doc(db, 'projects', id as string, 'sprints', activeS.id), { status: 'planning' });
@@ -2440,14 +2475,25 @@ function ProjectDetailContent() {
     const handleUpdateSprint = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!selectedSprintId) return;
+        const endDate = new Date(editSprintData.end_date);
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        // Force completed if end date passed and trying to set active
+        let status = editSprintData.status;
+        if (endDate < today && status === 'active') {
+            status = 'completed';
+        }
         setSavingEditSprint(true);
         try {
+            if (status === 'active') {
+                const activeS = sprints.find(s => s.status === 'active' && s.id !== selectedSprintId);
+                if (activeS) await updateDoc(doc(db, 'projects', id as string, 'sprints', activeS.id), { status: 'planning' });
+            }
             await updateDoc(doc(db, 'projects', id as string, 'sprints', selectedSprintId), {
                 title: editSprintData.title,
                 goal: editSprintData.goal,
                 start_date: editSprintData.start_date,
                 end_date: editSprintData.end_date,
-                status: editSprintData.status,
+                status,
             });
             setShowEditSprint(false);
         } catch (err) { console.error(err); }
@@ -6290,12 +6336,18 @@ function ProjectDetailContent() {
                                                         <div>
                                                             <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Statut</div>
                                                             <div style={{ display: 'flex', gap: 6 }}>
-                                                                {(['planning','active','completed'] as const).map(st => (
-                                                                    <button key={st} type="button" onClick={() => setEditSprintData(p => ({ ...p, status: st }))}
-                                                                        style={{ flex: 1, padding: '7px 10px', borderRadius: 10, border: editSprintData.status === st ? '1px solid rgba(200,169,96,0.5)' : '1px solid rgba(255,255,255,0.08)', background: editSprintData.status === st ? 'rgba(200,169,96,0.15)' : 'rgba(255,255,255,0.03)', color: editSprintData.status === st ? '#ede9e3' : 'rgba(255,255,255,0.45)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.12s' }}>
+                                                                {(['planning','active','completed'] as const).map(st => {
+                                                                    const endDate = new Date(editSprintData.end_date);
+                                                                    const today = new Date(); today.setHours(0, 0, 0, 0);
+                                                                    const isExpired = endDate < today;
+                                                                    const disabled = st === 'active' && isExpired;
+                                                                    return (
+                                                                    <button key={st} type="button" onClick={() => !disabled && setEditSprintData(p => ({ ...p, status: st }))}
+                                                                        style={{ flex: 1, padding: '7px 10px', borderRadius: 10, border: editSprintData.status === st ? '1px solid rgba(200,169,96,0.5)' : '1px solid rgba(255,255,255,0.08)', background: editSprintData.status === st ? 'rgba(200,169,96,0.15)' : 'rgba(255,255,255,0.03)', color: disabled ? 'rgba(255,255,255,0.15)' : editSprintData.status === st ? '#ede9e3' : 'rgba(255,255,255,0.45)', fontSize: '0.75rem', fontWeight: 600, cursor: disabled ? 'not-allowed' : 'pointer', fontFamily: 'inherit', transition: 'all 0.12s', opacity: disabled ? 0.4 : 1 }}>
                                                                         {st === 'planning' ? 'Planifié' : st === 'active' ? 'Actif' : 'Terminé'}
                                                                     </button>
-                                                                ))}
+                                                                    );
+                                                                })}
                                                             </div>
                                                         </div>
                                                         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', paddingTop: 4 }}>
