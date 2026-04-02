@@ -479,13 +479,26 @@ function ObjectiveDetailContent() {
         // Realtime live_session (who is in the video room right now)
         const liveSessionRef = collection(db, 'objectives', id as string, 'live_session');
         const unsubLiveSession = onSnapshot(liveSessionRef, (snap) => {
-            setLiveRoomCount(snap.size);
-            setLiveRoomMembers(snap.docs.map(d => ({
+            const cutoff = Date.now() - 4 * 60 * 60 * 1000; // 4 hours
+            const activeDocs = snap.docs.filter(d => {
+                const joinedAt = d.data().joined_at;
+                if (!joinedAt?.seconds) return false;
+                return joinedAt.seconds * 1000 > cutoff;
+            });
+            setLiveRoomCount(activeDocs.length);
+            setLiveRoomMembers(activeDocs.map(d => ({
                 uid: d.id,
                 full_name: d.data().full_name || 'Membre',
                 avatar_url: d.data().avatar_url,
                 avatar_style: d.data().avatar_style,
             })));
+            // Clean up stale entries
+            snap.docs.forEach(d => {
+                const joinedAt = d.data().joined_at;
+                if (!joinedAt?.seconds || joinedAt.seconds * 1000 <= cutoff) {
+                    deleteDoc(d.ref);
+                }
+            });
         });
 
         // Realtime Presence Subscription
