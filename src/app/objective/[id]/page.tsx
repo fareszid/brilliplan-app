@@ -1940,8 +1940,8 @@ function ObjectiveDetailContent() {
                     to   { opacity: 1; }
                 }
                 @keyframes scaleUp {
-                    from { transform: translate(-50%, -48%) scale(0.96); opacity: 0; }
-                    to   { transform: translate(-50%, -50%) scale(1);    opacity: 1; }
+                    from { transform: scale(0.96); opacity: 0; }
+                    to   { transform: scale(1);    opacity: 1; }
                 }
                 @keyframes pulse {
                     0% { transform: scale(1); opacity: 1; }
