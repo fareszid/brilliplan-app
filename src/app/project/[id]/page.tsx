@@ -442,6 +442,8 @@ function ProjectDetailContent() {
     const [sprints, setSprints] = useState<Sprint[]>([]);
     const [selectedSprintId, setSelectedSprintId] = useState<string | null>(null);
     const [sprintTasks, setSprintTasks] = useState<Record<string, SprintTask[]>>({});
+    // Board tasks for progression tracking
+    const [boardTasks, setBoardTasks] = useState<{ id: string; status: string }[]>([]);
     const [sprintTasksLoaded, setSprintTasksLoaded] = useState<Set<string>>(new Set());
     const [showSprintForm, setShowSprintForm] = useState(false);
     const [newSprintForm, setNewSprintForm] = useState({ title: '', goal: '', start_date: '', end_date: '' });
@@ -698,6 +700,12 @@ function ProjectDetailContent() {
             setSprints(snap.docs.map(d => ({ id: d.id, ...d.data() } as Sprint)));
         });
 
+        // Board tasks for progression tracking
+        const boardTasksRef = collection(db, 'projects', id as string, 'tasks');
+        const unsubBoardTasks = onSnapshot(boardTasksRef, (snap) => {
+            setBoardTasks(snap.docs.map(d => ({ id: d.id, status: d.data().status || 'todo' })));
+        });
+
         return () => {
             unsubscribe();
             unsubscribeAi();
@@ -711,6 +719,7 @@ function ProjectDetailContent() {
             unsubLiveSession();
             unsubActivity();
             unsubSprints();
+            unsubBoardTasks();
         };
     }, [id, user, router]);
 
@@ -722,7 +731,7 @@ function ProjectDetailContent() {
         if (active) setSelectedSprintId(active.id);
     }, [sprints]);
 
-    // Dynamic sprint tasks subscription
+    // Dynamic sprint tasks subscription (for selected sprint UI)
     useEffect(() => {
         if (!id || !selectedSprintId) return;
         const tasksRef = collection(db, 'projects', id as string, 'sprints', selectedSprintId, 'tasks');
@@ -734,6 +743,30 @@ function ProjectDetailContent() {
         });
         return () => unsub();
     }, [id, selectedSprintId]);
+
+    // Load all sprint tasks for progression calculation
+    const [allSprintTaskStats, setAllSprintTaskStats] = useState({ totalPoints: 0, donePoints: 0 });
+    useEffect(() => {
+        if (!id || sprints.length === 0) { setAllSprintTaskStats({ totalPoints: 0, donePoints: 0 }); return; }
+        const unsubs: (() => void)[] = [];
+        const perSprint: Record<string, { total: number; done: number }> = {};
+        for (const s of sprints) {
+            const ref = collection(db, 'projects', id as string, 'sprints', s.id, 'tasks');
+            const unsub = onSnapshot(ref, (snap) => {
+                let total = 0, done = 0;
+                snap.docs.forEach(d => {
+                    const pts = d.data().story_points || 1;
+                    total += pts;
+                    if (d.data().completed) done += pts;
+                });
+                perSprint[s.id] = { total, done };
+                const agg = Object.values(perSprint).reduce((acc, v) => ({ totalPoints: acc.totalPoints + v.total, donePoints: acc.donePoints + v.done }), { totalPoints: 0, donePoints: 0 });
+                setAllSprintTaskStats(agg);
+            });
+            unsubs.push(unsub);
+        }
+        return () => unsubs.forEach(u => u());
+    }, [id, sprints.length]);
 
     // Recalculate velocity for completed sprints (fixes sprints closed before the getDocs fix)
     useEffect(() => {
@@ -2268,29 +2301,39 @@ function ProjectDetailContent() {
         );
     }
 
-    // ─── COMPOSITE GROUP PROGRESSION ──────────────────────────────────
-    // 1. Hours dimension: avg. member completion vs target (40% weight)
-    const totalCompleted = memberships.reduce((acc, m) => acc + (m.completed_hours ?? 0), 0);
-    const totalTarget = project.target_hours * (memberships.length || 1);
-    const hoursPerc = Math.min(100, totalTarget > 0 ? Math.round((totalCompleted / totalTarget) * 100) : 0);
+    // ─── COMPOSITE GROUP PROGRESSION (delivery-driven) ─────────────────
+    // 1. Board tasks: done / total (40% weight)
+    const boardTasksTotal = boardTasks.length;
+    const boardTasksDone = boardTasks.filter(t => t.status === 'done').length;
+    const boardTasksPerc = boardTasksTotal > 0 ? Math.round((boardTasksDone / boardTasksTotal) * 100) : 0;
 
-    // 2. Milestones dimension: % of group milestones checked (40% weight)
+    // 2. Sprint tasks: completed story points / total story points (30% weight)
+    const sprintTasksPerc = allSprintTaskStats.totalPoints > 0 ? Math.round((allSprintTaskStats.donePoints / allSprintTaskStats.totalPoints) * 100) : 0;
+    const hasSprints = sprints.length > 0 && allSprintTaskStats.totalPoints > 0;
+
+    // 3. Milestones: completed / total (30% weight)
     const milestonesTotal = milestones.length;
     const milestonesDone = milestones.filter(m => m.completed).length;
     const milestonesPerc = milestonesTotal > 0 ? Math.round((milestonesDone / milestonesTotal) * 100) : 0;
 
-    // 3. Sessions dimension: sessions that already happened / total sessions (20% weight)
-    const sessionsTotal = sessions.length;
-    const sessionsPast = sessions.filter(s => {
-        const d = s.scheduled_at?.toDate ? s.scheduled_at.toDate() : new Date(s.scheduled_at);
-        return d < new Date();
-    }).length;
-    const sessionsPerc = sessionsTotal > 0 ? Math.round((sessionsPast / sessionsTotal) * 100) : 0;
-
-    // Composite weighted score
-    const globalPerc = Math.min(100, Math.round(
-        (milestonesTotal > 0 ? hoursPerc * 0.4 + milestonesPerc * 0.4 + sessionsPerc * 0.2 : hoursPerc * 0.7 + sessionsPerc * 0.3)
-    ));
+    // Composite weighted score with fallbacks
+    let globalPerc = 0;
+    if (boardTasksTotal > 0 && hasSprints && milestonesTotal > 0) {
+        globalPerc = Math.round(boardTasksPerc * 0.4 + sprintTasksPerc * 0.3 + milestonesPerc * 0.3);
+    } else if (boardTasksTotal > 0 && hasSprints) {
+        globalPerc = Math.round(boardTasksPerc * 0.6 + sprintTasksPerc * 0.4);
+    } else if (boardTasksTotal > 0 && milestonesTotal > 0) {
+        globalPerc = Math.round(boardTasksPerc * 0.6 + milestonesPerc * 0.4);
+    } else if (hasSprints && milestonesTotal > 0) {
+        globalPerc = Math.round(sprintTasksPerc * 0.6 + milestonesPerc * 0.4);
+    } else if (boardTasksTotal > 0) {
+        globalPerc = boardTasksPerc;
+    } else if (hasSprints) {
+        globalPerc = sprintTasksPerc;
+    } else if (milestonesTotal > 0) {
+        globalPerc = milestonesPerc;
+    }
+    globalPerc = Math.min(100, globalPerc);
 
 
     // ── Sprint CRUD Handlers ───────────────────────────────────────────────────
@@ -2637,29 +2680,22 @@ function ProjectDetailContent() {
                         </div>
                         {/* Stats 2×2 grid */}
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.875rem' }}>
-                            <div style={{ background: 'rgba(200,169,96,0.09)', border: '1px solid rgba(200,169,96,0.2)', borderRadius: '16px', padding: '1.25rem 1rem', textAlign: 'center' }}>
-                                <div style={{ fontSize: '1.85rem', fontWeight: 800, color: '#c8a960', lineHeight: 1 }}>{fmtHours(totalCompleted)}</div>
-                                <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.07em', marginTop: '6px', fontWeight: 600 }}>Complétées</div>
+                            <div style={{ background: 'rgba(59,130,246,0.09)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: '16px', padding: '1.25rem 1rem', textAlign: 'center' }}>
+                                <div style={{ fontSize: '1.85rem', fontWeight: 800, color: '#60a5fa', lineHeight: 1 }}>{boardTasksDone}/{boardTasksTotal}</div>
+                                <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.07em', marginTop: '6px', fontWeight: 600 }}>Tâches terminées</div>
                             </div>
                             <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '16px', padding: '1.25rem 1rem', textAlign: 'center' }}>
-                                <div style={{ fontSize: '1.85rem', fontWeight: 800, lineHeight: 1 }}>{project.target_hours}h</div>
-                                <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.07em', marginTop: '6px', fontWeight: 600 }}>{project.goal_frequency === 'daily' ? 'Obj./jour' : project.goal_frequency === 'weekly' ? 'Obj./sem.' : project.goal_frequency === 'monthly' ? 'Obj./mois' : 'Objectif'}</div>
+                                <div style={{ fontSize: '1.85rem', fontWeight: 800, lineHeight: 1 }}>{sprints.length}</div>
+                                <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.07em', marginTop: '6px', fontWeight: 600 }}>Sprints</div>
                             </div>
                             <div style={{ background: 'rgba(94,234,212,0.08)', border: '1px solid rgba(94,234,212,0.2)', borderRadius: '16px', padding: '1.25rem 1rem', textAlign: 'center' }}>
                                 <div style={{ fontSize: '1.85rem', fontWeight: 800, color: '#7df4de', lineHeight: 1 }}>{memberships.length}</div>
                                 <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.07em', marginTop: '6px', fontWeight: 600 }}>Membres</div>
                             </div>
-                            {milestonesTotal > 0 ? (
+                            {milestonesTotal > 0 && (
                                 <div style={{ background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.2)', borderRadius: '16px', padding: '1.25rem 1rem', textAlign: 'center' }}>
                                     <div style={{ fontSize: '1.85rem', fontWeight: 800, color: '#c084fc', lineHeight: 1 }}>{milestonesDone}/{milestonesTotal}</div>
                                     <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.07em', marginTop: '6px', fontWeight: 600 }}>Étapes</div>
-                                </div>
-                            ) : (
-                                <div style={{ background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.18)', borderRadius: '16px', padding: '1.25rem 1rem', textAlign: 'center' }}>
-                                    <div style={{ fontSize: '1.85rem', fontWeight: 800, color: '#34d399', lineHeight: 1 }}>
-                                        {sessions.filter(s => { const d = s.scheduled_at?.toDate ? s.scheduled_at.toDate() : new Date(s.scheduled_at); return d > new Date(); }).length}
-                                    </div>
-                                    <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.07em', marginTop: '6px', fontWeight: 600 }}>Sessions</div>
                                 </div>
                             )}
                         </div>
@@ -2672,26 +2708,28 @@ function ProjectDetailContent() {
                             </div>
                             {/* Stacked bar */}
                             <div style={{ height: '10px', borderRadius: '8px', background: 'rgba(0,0,0,0.4)', overflow: 'hidden', display: 'flex', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.4)', marginBottom: '12px' }}>
-                                <div style={{ width: `${hoursPerc * 0.4}%`, background: 'var(--color-primary)', transition: 'width 0.8s ease', minWidth: hoursPerc > 0 ? '2px' : 0 }} />
-                                {milestonesTotal > 0 && <div style={{ width: `${milestonesPerc * 0.4}%`, background: 'var(--color-secondary)', transition: 'width 0.8s ease', minWidth: milestonesPerc > 0 ? '2px' : 0 }} />}
-                                {sessionsTotal > 0 && <div style={{ width: `${sessionsPerc * 0.2}%`, background: '#a855f7', transition: 'width 0.8s ease', minWidth: sessionsPerc > 0 ? '2px' : 0 }} />}
+                                {boardTasksTotal > 0 && <div style={{ width: `${globalPerc > 0 ? Math.round(boardTasksPerc * (boardTasksTotal > 0 && hasSprints && milestonesTotal > 0 ? 0.4 : boardTasksTotal > 0 && (hasSprints || milestonesTotal > 0) ? 0.6 : 1)) : 0}%`, background: '#3b82f6', transition: 'width 0.8s ease', minWidth: boardTasksPerc > 0 ? '2px' : 0 }} />}
+                                {hasSprints && <div style={{ width: `${globalPerc > 0 ? Math.round(sprintTasksPerc * (boardTasksTotal > 0 && milestonesTotal > 0 ? 0.3 : boardTasksTotal > 0 ? 0.4 : milestonesTotal > 0 ? 0.6 : 1)) : 0}%`, background: '#10b981', transition: 'width 0.8s ease', minWidth: sprintTasksPerc > 0 ? '2px' : 0 }} />}
+                                {milestonesTotal > 0 && <div style={{ width: `${globalPerc > 0 ? Math.round(milestonesPerc * (boardTasksTotal > 0 && hasSprints ? 0.3 : boardTasksTotal > 0 || hasSprints ? 0.4 : 1)) : 0}%`, background: '#a855f7', transition: 'width 0.8s ease', minWidth: milestonesPerc > 0 ? '2px' : 0 }} />}
                             </div>
                             {/* Legend */}
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', fontSize: '0.72rem', opacity: 0.55 }}>
-                                <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                                    <span style={{ display: 'inline-block', width: '9px', height: '9px', borderRadius: '3px', background: 'var(--color-primary)' }} />
-                                    Heures {hoursPerc}%
-                                </span>
-                                {milestonesTotal > 0 && (
+                                {boardTasksTotal > 0 && (
                                     <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                                        <span style={{ display: 'inline-block', width: '9px', height: '9px', borderRadius: '3px', background: 'var(--color-secondary)' }} />
-                                        Étapes {milestonesPerc}%
+                                        <span style={{ display: 'inline-block', width: '9px', height: '9px', borderRadius: '3px', background: '#3b82f6' }} />
+                                        Tâches {boardTasksPerc}%
                                     </span>
                                 )}
-                                {sessionsTotal > 0 && (
+                                {hasSprints && (
+                                    <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                        <span style={{ display: 'inline-block', width: '9px', height: '9px', borderRadius: '3px', background: '#10b981' }} />
+                                        Sprints {sprintTasksPerc}%
+                                    </span>
+                                )}
+                                {milestonesTotal > 0 && (
                                     <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
                                         <span style={{ display: 'inline-block', width: '9px', height: '9px', borderRadius: '3px', background: '#a855f7' }} />
-                                        Sessions {sessionsPerc}%
+                                        Étapes {milestonesPerc}%
                                     </span>
                                 )}
                             </div>

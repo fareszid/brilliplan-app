@@ -1908,28 +1908,20 @@ function ObjectiveDetailContent() {
         );
     }
 
-    // ─── COMPOSITE GROUP PROGRESSION ──────────────────────────────────
-    // 1. Hours dimension: avg. member completion vs target (40% weight)
+    // ─── COMPOSITE GROUP PROGRESSION (effort-driven) ──────────────────
+    // 1. Hours dimension: avg. member completion vs target (50% weight)
     const totalCompleted = memberships.reduce((acc, m) => acc + (m.completed_hours ?? 0), 0);
     const totalTarget = objective.target_hours * (memberships.length || 1);
     const hoursPerc = Math.min(100, totalTarget > 0 ? Math.round((totalCompleted / totalTarget) * 100) : 0);
 
-    // 2. Milestones dimension: % of group milestones checked (40% weight)
+    // 2. Milestones dimension: % of group milestones checked (50% weight)
     const milestonesTotal = milestones.length;
     const milestonesDone = milestones.filter(m => m.completed).length;
     const milestonesPerc = milestonesTotal > 0 ? Math.round((milestonesDone / milestonesTotal) * 100) : 0;
 
-    // 3. Sessions dimension: sessions that already happened / total sessions (20% weight)
-    const sessionsTotal = sessions.length;
-    const sessionsPast = sessions.filter(s => {
-        const d = s.scheduled_at?.toDate ? s.scheduled_at.toDate() : new Date(s.scheduled_at);
-        return d < new Date();
-    }).length;
-    const sessionsPerc = sessionsTotal > 0 ? Math.round((sessionsPast / sessionsTotal) * 100) : 0;
-
     // Composite weighted score
     const globalPerc = Math.min(100, Math.round(
-        (milestonesTotal > 0 ? hoursPerc * 0.4 + milestonesPerc * 0.4 + sessionsPerc * 0.2 : hoursPerc * 0.7 + sessionsPerc * 0.3)
+        milestonesTotal > 0 ? hoursPerc * 0.5 + milestonesPerc * 0.5 : hoursPerc
     ));
 
     return (
@@ -2154,14 +2146,12 @@ function ObjectiveDetailContent() {
                                 <span style={{ color: '#c8a960', fontWeight: 900, fontSize: '1.5rem', lineHeight: 1 }}>{globalPerc}%</span>
                             </div>
                             <div style={{ height: '10px', borderRadius: '8px', background: 'rgba(0,0,0,0.4)', overflow: 'hidden', display: 'flex', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.4)', marginBottom: '12px' }}>
-                                <div style={{ width: `${hoursPerc * 0.4}%`, background: 'var(--color-primary)', transition: 'width 0.8s ease', minWidth: hoursPerc > 0 ? '2px' : 0 }} />
-                                {milestonesTotal > 0 && <div style={{ width: `${milestonesPerc * 0.4}%`, background: 'var(--color-secondary)', transition: 'width 0.8s ease', minWidth: milestonesPerc > 0 ? '2px' : 0 }} />}
-                                {sessionsTotal > 0 && <div style={{ width: `${sessionsPerc * 0.2}%`, background: '#a855f7', transition: 'width 0.8s ease', minWidth: sessionsPerc > 0 ? '2px' : 0 }} />}
+                                <div style={{ width: `${milestonesTotal > 0 ? hoursPerc * 0.5 : hoursPerc}%`, background: 'var(--color-primary)', transition: 'width 0.8s ease', minWidth: hoursPerc > 0 ? '2px' : 0 }} />
+                                {milestonesTotal > 0 && <div style={{ width: `${milestonesPerc * 0.5}%`, background: 'var(--color-secondary)', transition: 'width 0.8s ease', minWidth: milestonesPerc > 0 ? '2px' : 0 }} />}
                             </div>
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', fontSize: '0.72rem', opacity: 0.55 }}>
                                 <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}><span style={{ display: 'inline-block', width: '9px', height: '9px', borderRadius: '3px', background: 'var(--color-primary)' }} />Heures {hoursPerc}%</span>
                                 {milestonesTotal > 0 && <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}><span style={{ display: 'inline-block', width: '9px', height: '9px', borderRadius: '3px', background: 'var(--color-secondary)' }} />Étapes {milestonesPerc}%</span>}
-                                {sessionsTotal > 0 && <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}><span style={{ display: 'inline-block', width: '9px', height: '9px', borderRadius: '3px', background: '#a855f7' }} />Sessions {sessionsPerc}%</span>}
                             </div>
                         </div>
                     </div>

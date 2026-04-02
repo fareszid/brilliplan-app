@@ -146,6 +146,7 @@ export default function Navbar() {
     const NAV_LINKS = [
         { href: '/dashboard',      label: t('nav_dashboard'),  badge: 0 },
         { href: '/explore',        label: t('nav_explore'),    badge: 0 },
+        { href: '/find-teammates', label: t('nav_find_teammates'), badge: 0 },
         { href: '/calendar',       label: 'Agenda',            badge: 0 },
         { href: '/friends',        label: t('nav_friends'),    badge: friendRequestCount },
         { href: '/accountability', label: 'Pactes',            badge: accountabilityCount },
