@@ -487,9 +487,6 @@ export default function Navbar() {
                                                             <Link href="/profile" onClick={() => setShowUserMenu(false)} className="nb-panel-row" style={{ borderRadius: '10px', gap: 9, display: 'flex', alignItems: 'center' }}>
                                                                 <UserIcon size={13} style={{ color: 'rgba(237,233,227,.25)', flexShrink: 0 }} /> {t('nav_profile')}
                                                             </Link>
-                                                            <Link href="/settings" onClick={() => setShowUserMenu(false)} className="nb-panel-row" style={{ borderRadius: '10px', gap: 9, display: 'flex', alignItems: 'center' }}>
-                                                                <Settings size={13} style={{ color: 'rgba(237,233,227,.25)', flexShrink: 0 }} /> Paramètres
-                                                            </Link>
                                                         </div>
 
                                                         <div className="nb-sep" />
