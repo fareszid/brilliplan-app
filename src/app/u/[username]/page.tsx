@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { db } from '@/lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { UserProfileView } from '@/components/UserProfileView';
 
 export default function UsernameProfile() {
@@ -14,13 +14,22 @@ export default function UsernameProfile() {
 
     useEffect(() => {
         if (!username) return;
-        getDoc(doc(db, 'username_index', username)).then(snap => {
-            if (snap.exists()) {
-                setUid(snap.data().uid);
-            } else {
-                setNotFound(true);
+        const resolve = async () => {
+            // Try username_index first
+            const indexSnap = await getDoc(doc(db, 'username_index', username));
+            if (indexSnap.exists()) {
+                setUid(indexSnap.data().uid);
+                return;
             }
-        });
+            // Fallback: query users collection by username field
+            const usersSnap = await getDocs(query(collection(db, 'users'), where('username', '==', username)));
+            if (!usersSnap.empty) {
+                setUid(usersSnap.docs[0].id);
+                return;
+            }
+            setNotFound(true);
+        };
+        resolve();
     }, [username]);
 
     if (notFound) {

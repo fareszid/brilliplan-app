@@ -93,6 +93,7 @@ function ProfileContent() {
     const [notifFriends, setNotifFriends] = useState(true);
     const [notifSessions, setNotifSessions] = useState(true);
     const [notifMessages, setNotifMessages] = useState(true);
+    const [showSalonsOnProfile, setShowSalonsOnProfile] = useState(true);
     const [notifReminders, setNotifReminders] = useState(true);
 
     // Discipline profile
@@ -165,6 +166,7 @@ function ProfileContent() {
                     if (np.messages !== undefined) setNotifMessages(np.messages);
                     if (np.reminders !== undefined) setNotifReminders(np.reminders);
                 }
+                if (data.show_salons_on_profile !== undefined) setShowSalonsOnProfile(data.show_salons_on_profile);
                 if (data.discipline_profile) setDisciplineProfile(data.discipline_profile);
                 if (data.discipline_questionnaire) {
                     const q = data.discipline_questionnaire;
@@ -463,10 +465,82 @@ function ProfileContent() {
         try {
             const credential = EmailAuthProvider.credential(user.email, deletePassword);
             await reauthenticateWithCredential(user, credential);
-            // Delete user doc
-            await deleteDoc(doc(db, 'users', user.uid));
-            // Delete presence
-            await deleteDoc(doc(db, 'presence_global', user.uid)).catch(() => {});
+            const uid = user.uid;
+
+            // Helper: delete all docs matching a query
+            const deleteQuery = async (q: any) => {
+                const snap = await getDocs(q);
+                await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+            };
+
+            // Helper: delete all docs in a subcollection
+            const deleteSub = async (parentPath: string, subName: string) => {
+                const snap = await getDocs(collection(db, parentPath, subName));
+                await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+            };
+
+            // Delete objectives owned by user (and their subcollections)
+            const ownedObjs = await getDocs(query(collection(db, 'objectives'), where('owner_id', '==', uid)));
+            for (const objDoc of ownedObjs.docs) {
+                const objPath = `objectives/${objDoc.id}`;
+                for (const sub of ['tasks', 'messages', 'resources', 'sprints', 'milestones', 'presence', 'live_session', 'activity']) {
+                    await deleteSub(objPath, sub).catch(() => {});
+                }
+                await deleteDoc(objDoc.ref);
+            }
+
+            // Delete projects owned by user (and their subcollections)
+            const ownedProjs = await getDocs(query(collection(db, 'projects'), where('owner_id', '==', uid)));
+            for (const projDoc of ownedProjs.docs) {
+                const projPath = `projects/${projDoc.id}`;
+                for (const sub of ['tasks', 'messages', 'resources', 'sprints', 'milestones', 'presence', 'live_session', 'activity']) {
+                    await deleteSub(projPath, sub).catch(() => {});
+                }
+                await deleteDoc(projDoc.ref);
+            }
+
+            // Delete memberships (objective)
+            await deleteQuery(query(collection(db, 'memberships'), where('user_id', '==', uid)));
+
+            // Delete project memberships
+            await deleteQuery(query(collection(db, 'project_memberships'), where('user_id', '==', uid)));
+
+            // Delete friendships (both directions)
+            await deleteQuery(query(collection(db, 'friendships'), where('from_uid', '==', uid)));
+            await deleteQuery(query(collection(db, 'friendships'), where('to_uid', '==', uid)));
+
+            // Delete accountability pairs (both directions)
+            await deleteQuery(query(collection(db, 'accountability_pairs'), where('user1_id', '==', uid)));
+            await deleteQuery(query(collection(db, 'accountability_pairs'), where('user2_id', '==', uid)));
+
+            // Delete teammate requests (created by user)
+            await deleteQuery(query(collection(db, 'teammate_requests'), where('creator_id', '==', uid)));
+
+            // Delete blocks (by user)
+            await deleteQuery(query(collection(db, 'blocks'), where('user_id', '==', uid)));
+
+            // Delete session logs
+            await deleteQuery(query(collection(db, 'session_logs'), where('user_id', '==', uid)));
+
+            // Delete notifications subcollection
+            await deleteSub(`users/${uid}`, 'notifications').catch(() => {});
+            await deleteSub(`users/${uid}`, 'messages').catch(() => {});
+
+            // Delete user doc & presence
+            await deleteDoc(doc(db, 'users', uid));
+            await deleteDoc(doc(db, 'presence_global', uid)).catch(() => {});
+
+            // Delete email index entry
+            if (user.email) {
+                await deleteDoc(doc(db, 'email_index', user.email)).catch(() => {});
+            }
+
+            // Delete username index entry
+            const userSnap = await getDoc(doc(db, 'users', uid)).catch(() => null);
+            if (userSnap?.exists() && userSnap.data().username) {
+                await deleteDoc(doc(db, 'username_index', userSnap.data().username)).catch(() => {});
+            }
+
             // Delete Firebase Auth account
             await deleteUser(user);
             router.push('/login');
@@ -1575,6 +1649,39 @@ function ProfileContent() {
                                         </button>
                                     </div>
                                 ))}
+                            </div>
+                        </div>
+
+                        {/* ── Confidentialité ── */}
+                        <div className="card card-glass" style={{ padding: '1.75rem 2rem', border: '1px solid rgba(255,255,255,0.08)' }}>
+                            <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'white', margin: '0 0 1.25rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <Eye size={16} style={{ color: '#a78bfa' }} /> Confidentialit&eacute;
+                            </h3>
+                            <div style={{
+                                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                padding: '14px 0',
+                            }}>
+                                <div>
+                                    <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#e2e8f0' }}>Afficher mes salons publics</div>
+                                    <div style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.35)', marginTop: '2px' }}>Les objectifs et projets publics apparaissent sur ton profil</div>
+                                </div>
+                                <button onClick={async () => {
+                                    const newVal = !showSalonsOnProfile;
+                                    setShowSalonsOnProfile(newVal);
+                                    if (user) await setDoc(doc(db, 'users', user.uid), { show_salons_on_profile: newVal }, { merge: true });
+                                }}
+                                    style={{
+                                        width: '44px', height: '24px', borderRadius: '12px', border: 'none', cursor: 'pointer',
+                                        background: showSalonsOnProfile ? '#a78bfa' : 'rgba(255,255,255,0.1)',
+                                        position: 'relative', transition: 'background 0.2s', flexShrink: 0,
+                                    }}>
+                                    <div style={{
+                                        width: '18px', height: '18px', borderRadius: '50%',
+                                        background: 'white', position: 'absolute', top: '3px',
+                                        left: showSalonsOnProfile ? '23px' : '3px',
+                                        transition: 'left 0.2s', boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+                                    }} />
+                                </button>
                             </div>
                         </div>
 

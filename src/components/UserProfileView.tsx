@@ -27,13 +27,15 @@ function xpForNextLevel(level: number): number {
     return Math.pow(level, 2) * 100;
 }
 
-export function UserProfileView({ uid: uidProp, redirectToUsername }: { uid?: string; redirectToUsername?: boolean }) {
+export function UserProfileView({ uid: uidProp }: { uid?: string }) {
     const params = useParams<{ uid: string }>();
     const uid = uidProp || params?.uid;
     const { user } = useAuth();
     const { t } = useLocale();
     const router = useRouter();
     const { isBlocked, blockedIds, blockUser, unblockUser, reportUser } = useBlock();
+
+    useEffect(() => { window.scrollTo(0, 0); }, [uid]);
 
     const [profile, setProfile] = useState<any>(null);
     const [objectives, setObjectives] = useState<any[]>([]);
@@ -88,7 +90,12 @@ export function UserProfileView({ uid: uidProp, redirectToUsername }: { uid?: st
                     const objs = objDocs
                         .filter(d => d.exists() && d.data()?.is_public)
                         .map(d => ({ id: d.id, ...d.data() }));
-                    setObjectives(objs);
+                    // Fetch actual member counts
+                    const objsWithCounts = await Promise.all(objs.map(async (obj) => {
+                        const memSnap = await getDocs(query(collection(db, 'memberships'), where('objective_id', '==', obj.id)));
+                        return { ...obj, _memberCount: memSnap.size };
+                    }));
+                    setObjectives(objsWithCounts);
                 }
 
                 // Stats from project memberships
@@ -103,7 +110,12 @@ export function UserProfileView({ uid: uidProp, redirectToUsername }: { uid?: st
                     const projs = projDocs
                         .filter(d => d.exists() && d.data()?.is_public !== false)
                         .map(d => ({ id: d.id, ...d.data() }));
-                    setProjects(projs);
+                    // Fetch actual member counts
+                    const projsWithCounts = await Promise.all(projs.map(async (proj) => {
+                        const memSnap = await getDocs(query(collection(db, 'project_memberships'), where('project_id', '==', proj.id)));
+                        return { ...proj, _memberCount: memSnap.size };
+                    }));
+                    setProjects(projsWithCounts);
                 }
 
                 // Check friendship
@@ -132,12 +144,6 @@ export function UserProfileView({ uid: uidProp, redirectToUsername }: { uid?: st
         load();
     }, [uid, user]);
 
-    // Redirect /user/[uid] → /u/[username] when username is available
-    useEffect(() => {
-        if (redirectToUsername && profile?.username) {
-            router.replace(`/u/${profile.username}`);
-        }
-    }, [profile, redirectToUsername, router]);
 
     const handleAddFriend = async () => {
         if (!user || !uid) return;
@@ -986,7 +992,7 @@ export function UserProfileView({ uid: uidProp, redirectToUsername }: { uid?: st
                     </div>
 
                     {/* SIDEBAR: Objectifs + Projets */}
-                    {(objectives.length > 0 || projects.length > 0 || (!dp && objectives.length === 0)) && (
+                    {(profile?.show_salons_on_profile !== false || isMyProfile) && (objectives.length > 0 || projects.length > 0 || (!dp && objectives.length === 0)) && (
                         <div style={{
                             display: 'flex', flexDirection: 'column', gap: '1.5rem',
                             animation: 'profileSlideUp 0.5s ease-out 0.3s both',
@@ -1063,7 +1069,7 @@ export function UserProfileView({ uid: uidProp, redirectToUsername }: { uid?: st
                                                             display: 'flex', alignItems: 'center', gap: '4px',
                                                             color: 'rgba(255,255,255,0.3)', fontSize: '0.72rem',
                                                         }}>
-                                                            <Users size={11} /> {obj.participant_count ?? '?'}
+                                                            <Users size={11} /> {obj._memberCount ?? 1}
                                                         </div>
                                                         {obj.category && (
                                                             <span style={{
@@ -1145,32 +1151,68 @@ export function UserProfileView({ uid: uidProp, redirectToUsername }: { uid?: st
                                     </div>
                                 ) : (
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                        {projects.map((proj: any) => (
-                                            <div
-                                                key={proj.id}
-                                                onClick={() => router.push(`/project/${proj.id}`)}
-                                                className="profile-obj-card"
-                                                style={{
-                                                    padding: '14px 16px', borderRadius: '13px', cursor: 'pointer',
-                                                    background: 'rgba(255,255,255,0.025)',
-                                                    border: '1px solid rgba(255,255,255,0.06)',
-                                                }}
-                                            >
-                                                <h4 style={{
-                                                    margin: '0 0 5px', fontWeight: 700, fontSize: '0.84rem',
-                                                    color: '#ede9e3', overflow: 'hidden',
-                                                    textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                                }}>
-                                                    {proj.name || proj.title || 'Projet'}
-                                                </h4>
-                                                <div style={{
-                                                    display: 'flex', alignItems: 'center', gap: '4px',
-                                                    color: 'rgba(255,255,255,0.3)', fontSize: '0.72rem',
-                                                }}>
-                                                    <Users size={11} /> {proj.member_count ?? proj.participant_count ?? '?'}
+                                        {projects.map((proj: any) => {
+                                            const perc = Math.min(100, Math.round(((proj.completed_hours ?? 0) / (proj.target_hours || 1)) * 100));
+                                            return (
+                                                <div
+                                                    key={proj.id}
+                                                    onClick={() => router.push(`/project/${proj.id}`)}
+                                                    className="profile-obj-card"
+                                                    style={{
+                                                        padding: '14px 16px', borderRadius: '13px', cursor: 'pointer',
+                                                        background: 'rgba(255,255,255,0.025)',
+                                                        border: '1px solid rgba(255,255,255,0.06)',
+                                                    }}
+                                                >
+                                                    <h4 style={{
+                                                        margin: '0 0 5px', fontWeight: 700, fontSize: '0.84rem',
+                                                        color: '#ede9e3', overflow: 'hidden',
+                                                        textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                    }}>
+                                                        {proj.name || proj.title || 'Projet'}
+                                                    </h4>
+                                                    <div style={{
+                                                        display: 'flex', alignItems: 'center',
+                                                        justifyContent: 'space-between', marginBottom: '8px',
+                                                    }}>
+                                                        <div style={{
+                                                            display: 'flex', alignItems: 'center', gap: '4px',
+                                                            color: 'rgba(255,255,255,0.3)', fontSize: '0.72rem',
+                                                        }}>
+                                                            <Users size={11} /> {proj._memberCount ?? 1}
+                                                        </div>
+                                                        {proj.category && (
+                                                            <span style={{
+                                                                fontSize: '0.62rem', fontWeight: 700,
+                                                                padding: '2px 7px', borderRadius: '6px',
+                                                                background: '#a78bfa10',
+                                                                color: '#a78bfa',
+                                                                border: '1px solid #a78bfa18',
+                                                            }}>
+                                                                {proj.category}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div style={{
+                                                        height: '3px', borderRadius: '2px',
+                                                        background: 'rgba(255,255,255,0.06)', overflow: 'hidden',
+                                                    }}>
+                                                        <div style={{
+                                                            height: '100%', width: `${perc}%`,
+                                                            background: 'linear-gradient(90deg, #a78bfa, #a78bfacc)',
+                                                            borderRadius: '2px',
+                                                            transition: 'width 0.6s ease',
+                                                        }} />
+                                                    </div>
+                                                    <div style={{
+                                                        fontSize: '0.62rem', color: 'rgba(255,255,255,0.25)',
+                                                        fontWeight: 600, marginTop: '5px', textAlign: 'right',
+                                                    }}>
+                                                        {perc}%
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
                                 )}
                             </div>
