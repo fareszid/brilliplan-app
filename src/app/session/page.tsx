@@ -397,6 +397,7 @@ function SessionPage() {
     return (
         <>
             <style>{`
+                html, body { overflow: hidden !important; height: 100vh !important; }
                 @keyframes slideInLeft {
                     from { transform: translateX(-100%); }
                     to   { transform: translateX(0); }
@@ -552,22 +553,6 @@ function SessionPage() {
                                     <LayoutDashboard size={13} /> Retour au salon
                                 </button>
                             )}
-                            {/* Leave / end session */}
-                            <button
-                                onClick={confirmLeave}
-                                style={{
-                                    display: 'flex', alignItems: 'center', gap: 6,
-                                    background: 'rgba(239,68,68,0.15)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-                                    border: '1px solid rgba(239,68,68,0.3)',
-                                    borderRadius: 10, padding: '7px 14px',
-                                    color: '#fca5a5', fontSize: '0.75rem', fontWeight: 600,
-                                    cursor: 'pointer', transition: 'background 0.2s',
-                                }}
-                                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.28)')}
-                                onMouseLeave={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.15)')}
-                            >
-                                <PhoneOff size={13} /> Quitter
-                            </button>
                         </div>
                     </div>
                 </div>
@@ -1053,19 +1038,6 @@ function SessionPage() {
                             ))}
                         </div>
 
-                        {/* Quit */}
-                        <div style={{ padding: '12px 14px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                            <button onClick={confirmLeave} style={{
-                                width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-                                padding: '10px 14px', borderRadius: 10,
-                                background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.15)',
-                                color: '#ef4444', fontSize: '0.83rem', fontWeight: 600, cursor: 'pointer', transition: 'background 0.2s',
-                            }}
-                                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.14)')}
-                                onMouseLeave={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.07)')}>
-                                <PhoneOff size={15} /> Quitter la salle
-                            </button>
-                        </div>
                     </div>
                 </>
             )}
