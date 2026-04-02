@@ -17,6 +17,7 @@ import OnboardingTutorial from "@/components/OnboardingTutorial";
 import XPToast from "@/components/XPToast";
 import SessionRecapWrapper from "@/components/SessionRecapWrapper";
 import BadgeCelebration from "@/components/BadgeCelebration";
+import { SpeedInsights } from '@vercel/speed-insights/next';
 
 const figtree = Figtree({
   subsets: ["latin"],
@@ -112,6 +113,7 @@ export default function RootLayout({
                       <a href="/terms" className="bp-footer-link">CGU</a>
                     </div>
                   </footer>
+                  <SpeedInsights />
                 </AccCallProvider>
                 </LiveSessionProvider>
               </CallProvider>
