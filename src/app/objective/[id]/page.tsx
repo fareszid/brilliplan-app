@@ -212,7 +212,7 @@ function ObjectiveDetailContent() {
     const { user } = useAuth();
     const router = useRouter();
     const { t } = useLocale();
-    const { setNavbarVisible, setIsWorking: setIsWorkingGlobal, isWorking: isWorkingGlobal } = useUI();
+    const { setNavbarVisible, setIsWorking: setIsWorkingGlobal, isWorking: isWorkingGlobal, setWorkInfo, registerStopWork } = useUI();
 
     const [objective, setObjective] = useState<any>(null);
     const [memberships, setMemberships] = useState<any[]>([]);
@@ -328,7 +328,9 @@ function ObjectiveDetailContent() {
     // Live presence state
     const [presenceMap, setPresenceMap] = useState<Record<string, { is_working: boolean; started_at: any; last_seen: any }>>({});
     const [isWorking, setIsWorking] = useState(false);
+    const isWorkingRef = useRef(false); // tracks if THIS page owns the global working state
     const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const sessionStartedAtRef = useRef<number>(0); // ms timestamp captured when work starts
     // Ticker so stale presences disappear without a Firestore event
     const [, setTick] = useState(0);
 
@@ -531,7 +533,12 @@ function ObjectiveDetailContent() {
                 const userIsWorking = p?.is_working === true;
                 // Only update state if value actually changed to avoid re-renders
                 setIsWorking(prev => prev === userIsWorking ? prev : userIsWorking);
-                setIsWorkingGlobal(prev => prev === userIsWorking ? prev : userIsWorking);
+                // Only update global if this page owns the working state (was working here, or is starting to work here)
+                // This prevents navigating to a different salon from resetting the FOCUS indicator
+                if (userIsWorking || isWorkingRef.current) {
+                    setIsWorkingGlobal(prev => prev === userIsWorking ? prev : userIsWorking);
+                }
+                isWorkingRef.current = userIsWorking;
 
                 // Restart heartbeat if still working after navigating back to this page
                 if (userIsWorking && !heartbeatRef.current) {
@@ -1364,7 +1371,44 @@ function ObjectiveDetailContent() {
         }
 
         setIsWorking(next);
+        isWorkingRef.current = next;
         setIsWorkingGlobal(next);
+        setWorkInfo(next ? { id: id as string, title: objective?.title || '', type: 'objective' } : null);
+
+        if (next) {
+            // Capture start time for session logging when stopping from the dock
+            sessionStartedAtRef.current = Date.now();
+            registerStopWork(() => {
+                // Self-contained stop: runs even if component is unmounted / navigated away
+                const capturedUid = user.uid;
+                const capturedId = id as string;
+                const capturedTitle = objective?.title || '';
+                const startMs = sessionStartedAtRef.current;
+                const pRef = doc(db, 'objectives', capturedId, 'presence', capturedUid);
+                setDoc(pRef, { is_working: false, started_at: null, last_seen: serverTimestamp() }, { merge: true }).catch(() => {});
+                if (heartbeatRef.current) { clearInterval(heartbeatRef.current); heartbeatRef.current = null; }
+                const elapsed = startMs > 0 ? (Date.now() - startMs) / 3600000 : 0;
+                if (elapsed > 0.005) {
+                    addDoc(collection(db, 'session_logs'), {
+                        user_id: capturedUid, objective_id: capturedId, type: 'objective',
+                        title: capturedTitle, started_at: new Date(startMs), ended_at: new Date(),
+                        duration_hours: parseFloat(elapsed.toFixed(4)), pomodoros: 0, created_at: serverTimestamp(),
+                    }).catch(() => {});
+                    updateDoc(doc(db, 'users', capturedUid), {
+                        total_sessions: increment(1), total_hours: increment(parseFloat(elapsed.toFixed(4))),
+                        xp: increment(15), coworking_sessions: increment(1),
+                    }).catch(() => {});
+                }
+                setIsWorking(false);
+                isWorkingRef.current = false;
+                setIsWorkingGlobal(false);
+                setWorkInfo(null);
+                registerStopWork(null);
+            });
+        } else {
+            sessionStartedAtRef.current = 0;
+            registerStopWork(null);
+        }
 
         await setDoc(presRef, {
             user_id: user.uid,

@@ -217,7 +217,7 @@ function AccFileCard({ fileUrl, fileName, fileType, fileSize }: {
 function AccountabilityDetailContent() {
     const { id } = useParams();
     const { user } = useAuth();
-    const { setNavbarVisible, isWorking: isWorkingGlobal } = useUI();
+    const { setNavbarVisible, isWorking: isWorkingGlobal, setWorkInfo, registerStopWork } = useUI();
     const router = useRouter();
     const { callInfo, zpRef: callZpRef, containerRef: callContainerRef, activateCall, endCall, callMinimized, minimizeCall, setIsAccWorking } = useAccCall();
     const isOnCall = !!callInfo && callInfo.pairId === (id as string);
@@ -767,6 +767,8 @@ function AccountabilityDetailContent() {
 
     const handleJoinCoworking = async () => {
         if (!user) return;
+        setWorkInfo({ id: id as string, title: partner?.full_name || 'Accountability', type: 'accountability' });
+        registerStopWork(handleLeaveCoworking);
         await setDoc(liveRef, {
             participants: arrayUnion(user.uid),
             last_seen_map: { [user.uid]: serverTimestamp() },
@@ -779,6 +781,8 @@ function AccountabilityDetailContent() {
     const handleLeaveCoworking = async () => {
         if (!user) return;
         setIsAccWorking(false);
+        setWorkInfo(null);
+        registerStopWork(null);
         await updateDoc(liveRef, {
             participants: arrayRemove(user.uid),
             timer_running: false,
@@ -804,6 +808,8 @@ function AccountabilityDetailContent() {
             }).catch(() => {});
         }
         endCall();
+        setWorkInfo(null);
+        registerStopWork(null);
         // Trigger re-preload for the next call (Phase 1 won't re-run on callInfo change)
         setPreloadTrigger(t => t + 1);
     };
@@ -1024,6 +1030,8 @@ function AccountabilityDetailContent() {
                     timer_started_at: null,
                 }).catch(() => {});
                 endCall();
+                setWorkInfo(null);
+                registerStopWork(null);
                 setPreloadTrigger(t => t + 1);
             },
         });

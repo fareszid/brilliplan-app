@@ -12,6 +12,7 @@ import { GamificationProvider } from "@/context/GamificationContext";
 import Navbar from "@/components/Navbar";
 import LiveSessionOverlay from "@/components/LiveSessionOverlay";
 import AccCallOverlay from "@/components/AccCallOverlay";
+import ActiveSessionDock from "@/components/ActiveSessionDock";
 import GlobalReminders from "@/components/GlobalReminders";
 import OnboardingTutorial from "@/components/OnboardingTutorial";
 import XPToast from "@/components/XPToast";
@@ -86,6 +87,7 @@ export default function RootLayout({
                   <Navbar />
                   <LiveSessionOverlay />
                   <AccCallOverlay />
+                  <ActiveSessionDock />
                   <GlobalReminders />
                   <OnboardingTutorial />
                   <XPToast />

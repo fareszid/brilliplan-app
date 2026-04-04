@@ -318,19 +318,6 @@ export default function Navbar() {
                         {/* ══ RIGHT ACTIONS ══ */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', paddingLeft: '10px', flexShrink: 0 }}>
 
-                            {/* Active session pill */}
-                            {activeSession && (
-                                <button
-                                    onClick={() => router.push(`/session?id=${activeSession.objectiveId}`)}
-                                    style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: '8px', background: 'rgba(74,222,128,.06)', border: '1px solid rgba(74,222,128,.15)', color: '#4ade80', fontSize: '.72rem', fontWeight: 600, cursor: 'pointer', transition: 'background .15s', whiteSpace: 'nowrap', marginRight: 2 }}
-                                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(74,222,128,.12)'}
-                                    onMouseLeave={e => e.currentTarget.style.background = 'rgba(74,222,128,.06)'}
-                                >
-                                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#4ade80', flexShrink: 0, animation: 'nb-dot 1.4s ease-in-out infinite' }} />
-                                    Retour à la salle
-                                </button>
-                            )}
-
                             {/* Ambient player */}
                             {user && (
                                 <div ref={ambientRef} style={{ position: 'relative' }}>
