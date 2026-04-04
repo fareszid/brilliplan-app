@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { db } from '@/lib/firebase';
 import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, orderBy } from 'firebase/firestore';
 import { Plus, CheckCircle, Clock, Save, Trash2, Calendar as CalendarIcon, LayoutDashboard, List as ListIcon, Tag, AlertCircle, Search, Filter, AlignJustify, MessageSquare, X, Send, Link2, Zap, ChevronDown, ChevronUp, ArrowRight } from 'lucide-react';
@@ -777,26 +778,34 @@ export default function ProjectBoard({ projectId, user, projectMembers, currentU
                 </AnimatePresence>
             </div>
 
-            {/* Task Form Modal */}
-            <AnimatePresence>
-                {showTaskForm && (
-                    <motion.div
-                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                        transition={{ duration: 0.18 }}
-                        style={{ position: 'fixed', inset: 0, background: 'rgba(4,4,12,0.88)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0' }}
-                        onClick={(e) => { if (e.target === e.currentTarget) setShowTaskForm(false); }}
-                    >
+            {/* Task Form Drawer — portaled to body to escape overflow clipping */}
+            {showTaskForm && typeof document !== 'undefined' && createPortal(
+                    <>
+                        {/* Backdrop */}
+                        <div
+                            style={{ position: 'fixed', inset: 0, background: 'rgba(4,4,12,0.45)', zIndex: 1000 }}
+                            onClick={() => setShowTaskForm(false)}
+                        />
+                        {/* Centered modal wrapper — framer-motion doesn't touch this div */}
+                        <div style={{
+                            position: 'fixed', inset: 0, zIndex: 1001,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            padding: '40px 24px',
+                            pointerEvents: 'none',
+                        }}>
                         <motion.div
-                            initial={{ opacity: 0, scale: 0.95, y: 24 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.97, y: 12 }}
-                            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                            initial={{ opacity: 0, scale: 0.96, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+                            transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}
                             style={{
-                                width: 'calc(100vw - 32px)', maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100vh - 32px)',
-                                background: 'rgba(13,13,26,0.97)',
-                                border: '1px solid rgba(255,255,255,0.1)',
-                                borderRadius: '20px',
-                                overflow: 'hidden',
-                                boxShadow: '0 0 0 1px rgba(200,169,96,0.2), inset 0 1px 0 rgba(255,255,255,0.08)',
+                                width: '100%', maxWidth: 900,
+                                maxHeight: '100%',
+                                background: 'rgba(13,13,26,0.99)',
+                                border: '1px solid rgba(255,255,255,0.08)',
+                                borderRadius: 20,
+                                boxShadow: '0 32px 80px rgba(0,0,0,0.8), 0 0 0 1px rgba(200,169,96,0.15)',
                                 display: 'flex', flexDirection: 'column',
+                                overflow: 'hidden',
+                                pointerEvents: 'auto',
                             }}
                         >
                             {/* Header */}
@@ -957,7 +966,7 @@ export default function ProjectBoard({ projectId, user, projectMembers, currentU
                                                 Échéance
                                             </label>
                                             <div style={{ pointerEvents: canEditForm ? 'auto' : 'none', opacity: canEditForm ? 1 : 0.5 }}>
-                                                <CalendarPicker value={formDeadline} onChange={setFormDeadline} placeholder="Sélectionner une date et heure" />
+                                                <CalendarPicker value={formDeadline} onChange={setFormDeadline} placeholder="Sélectionner une date et heure" compact />
                                             </div>
                                         </div>
 
@@ -1129,9 +1138,10 @@ export default function ProjectBoard({ projectId, user, projectMembers, currentU
                                 )}
                             </form>
                         </motion.div>
-                    </motion.div>
+                        </div>
+                    </>,
+                    document.body
                 )}
-            </AnimatePresence>
 
             {/* Mobile FAB */}
             <div style={{ display: 'none' }} className="md:hidden">

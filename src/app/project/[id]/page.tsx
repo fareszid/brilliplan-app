@@ -4352,6 +4352,7 @@ function ProjectDetailContent() {
                                             onChange={v => setNewSession(s => ({ ...s, scheduled_at: v }))}
                                             placeholder={t('agenda_label_date')}
                                             required
+                                            compact
                                         />
                                     </div>
                                     <div className="flex flex-col gap-1" style={{ minWidth: '170px' }}>
@@ -4448,6 +4449,7 @@ function ProjectDetailContent() {
                                                                     <CalendarPicker
                                                                         value={editDate}
                                                                         onChange={v => setEditDate(v)}
+                                                                        compact
                                                                     />
                                                                     <div className="flex gap-2">
                                                                         <button className="btn btn-sm btn-primary flex-1" onClick={() => handleUpdateSessionDate(s)} disabled={!editDate}>✓ OK</button>

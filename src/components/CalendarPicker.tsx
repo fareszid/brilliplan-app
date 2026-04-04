@@ -46,7 +46,7 @@ export default function CalendarPicker({ value, onChange, placeholder = 'Choisir
             setPopoverPos({
                 top: rect.bottom + (compact ? 4 : 8) + window.scrollY,
                 left: rect.left + window.scrollX,
-                width: compact ? 240 : Math.max(300, rect.width),
+                width: compact ? 220 : Math.max(300, rect.width),
             });
         }
     }, [open, compact]);
@@ -142,7 +142,7 @@ export default function CalendarPicker({ value, onChange, placeholder = 'Choisir
                             left: popoverPos.left,
                             zIndex: 99999,
                             width: popoverPos.width,
-                            minWidth: compact ? '240px' : '340px',
+                            minWidth: compact ? '220px' : '340px',
                             padding: compact ? '0.6rem 0.75rem' : '1rem 1.25rem',
                             borderRadius: compact ? '12px' : '14px',
                             boxShadow: '0 24px 64px rgba(0,0,0,0.8)',
