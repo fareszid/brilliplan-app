@@ -293,7 +293,7 @@ function ProjectDetailContent() {
     const { user } = useAuth();
     const router = useRouter();
     const { t } = useLocale();
-    const { setNavbarVisible, setIsWorking: setIsWorkingGlobal } = useUI();
+    const { setNavbarVisible, setIsWorking: setIsWorkingGlobal, isWorking: isWorkingGlobal } = useUI();
 
     const [project, setProject] = useState<any>(null);
     const [memberships, setMemberships] = useState<any[]>([]);
@@ -1664,6 +1664,8 @@ function ProjectDetailContent() {
 
     const toggleFocus = async () => {
         if (!user || !id) return;
+        // Block starting a new session if one is already active elsewhere
+        if (!isWorking && isWorkingGlobal) return;
         const presRef = doc(db, 'projects', id as string, 'presence', user.uid);
         const next = !isWorking;
 
@@ -2604,49 +2606,62 @@ function ProjectDetailContent() {
                         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
                             <button
                                 onClick={toggleFocus}
+                                disabled={!isWorking && isWorkingGlobal}
+                                title={!isWorking && isWorkingGlobal ? 'Tu as déjà une session active ailleurs' : undefined}
                                 style={{
                                     display: 'flex', alignItems: 'center', gap: '10px',
                                     padding: '12px 26px', borderRadius: '14px', fontWeight: 700,
-                                    fontSize: '0.95rem', cursor: 'pointer', fontFamily: 'inherit',
+                                    fontSize: '0.95rem', cursor: (!isWorking && isWorkingGlobal) ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
                                     transition: 'all 0.25s cubic-bezier(0.4,0,0.2,1)',
-                                    background: isWorking ? 'rgba(16,185,129,0.12)' : 'linear-gradient(135deg,#c8a960,#b89a50)',
-                                    color: isWorking ? '#10b981' : '#fff',
-                                    border: isWorking ? '1px solid rgba(16,185,129,0.4)' : 'none',
-                                    boxShadow: isWorking ? '0 0 20px rgba(16,185,129,0.2)' : '0 6px 24px rgba(200,169,96,0.35)',
+                                    background: isWorking ? 'rgba(16,185,129,0.12)' : (!isWorking && isWorkingGlobal) ? 'rgba(237,233,227,0.04)' : 'linear-gradient(135deg,#c8a960,#b89a50)',
+                                    color: isWorking ? '#10b981' : (!isWorking && isWorkingGlobal) ? 'rgba(237,233,227,0.25)' : '#fff',
+                                    border: isWorking ? '1px solid rgba(16,185,129,0.4)' : (!isWorking && isWorkingGlobal) ? '1px solid rgba(237,233,227,0.08)' : 'none',
+                                    boxShadow: isWorking ? '0 0 20px rgba(16,185,129,0.2)' : (!isWorking && isWorkingGlobal) ? 'none' : '0 6px 24px rgba(200,169,96,0.35)',
+                                    opacity: (!isWorking && isWorkingGlobal) ? 0.5 : 1,
                                 }}
                             >
                                 <Zap size={17} strokeWidth={2.5} style={{ fill: isWorking ? 'currentColor' : 'none' }} />
-                                {isWorking ? 'Je m\'arrête' : 'Je commence à travailler'}
+                                {isWorking ? "Je m'arrête" : (!isWorking && isWorkingGlobal) ? 'Session active ailleurs' : 'Je commence à travailler'}
                             </button>
 
-                            <Link
-                                href={`/session?id=${project.id}&type=project`}
-                                className="btn btn-outline btn-lg"
-                                style={{
-                                    padding: '12px 20px', borderRadius: '14px',
-                                    display: 'flex', alignItems: 'center', gap: '10px',
-                                    fontSize: '0.95rem',
-                                    background: liveRoomCount > 0 ? 'rgba(16,185,129,0.08)' : undefined,
-                                    borderColor: liveRoomCount > 0 ? 'rgba(16,185,129,0.35)' : undefined,
-                                    color: liveRoomCount > 0 ? '#10b981' : undefined,
-                                }}
-                            >
-                                <Video size={17} />
-                                Coworking live
-                                {liveRoomCount > 0 && (
-                                    <span style={{
-                                        display: 'flex', alignItems: 'center', gap: 4,
-                                        background: 'rgba(16,185,129,0.12)',
-                                        border: '1px solid rgba(16,185,129,0.25)',
-                                        borderRadius: 6, padding: '2px 7px',
-                                        fontSize: '0.7rem', fontWeight: 700, color: '#10b981',
-                                        whiteSpace: 'nowrap',
-                                    }}>
-                                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#10b981', animation: 'pulse 1.5s infinite', display: 'inline-block' }} />
-                                        {liveRoomCount} en direct
-                                    </span>
-                                )}
-                            </Link>
+                            {isWorkingGlobal && !isWorking ? (
+                                <span
+                                    title="Tu as déjà une session active ailleurs"
+                                    className="btn btn-outline btn-lg"
+                                    style={{ padding: '12px 20px', borderRadius: '14px', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.95rem', opacity: 0.35, cursor: 'not-allowed' }}
+                                >
+                                    <Video size={17} /> Coworking live
+                                </span>
+                            ) : (
+                                <Link
+                                    href={`/session?id=${project.id}&type=project`}
+                                    className="btn btn-outline btn-lg"
+                                    style={{
+                                        padding: '12px 20px', borderRadius: '14px',
+                                        display: 'flex', alignItems: 'center', gap: '10px',
+                                        fontSize: '0.95rem',
+                                        background: liveRoomCount > 0 ? 'rgba(16,185,129,0.08)' : undefined,
+                                        borderColor: liveRoomCount > 0 ? 'rgba(16,185,129,0.35)' : undefined,
+                                        color: liveRoomCount > 0 ? '#10b981' : undefined,
+                                    }}
+                                >
+                                    <Video size={17} />
+                                    Coworking live
+                                    {liveRoomCount > 0 && (
+                                        <span style={{
+                                            display: 'flex', alignItems: 'center', gap: 4,
+                                            background: 'rgba(16,185,129,0.12)',
+                                            border: '1px solid rgba(16,185,129,0.25)',
+                                            borderRadius: 6, padding: '2px 7px',
+                                            fontSize: '0.7rem', fontWeight: 700, color: '#10b981',
+                                            whiteSpace: 'nowrap',
+                                        }}>
+                                            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#10b981', animation: 'pulse 1.5s infinite', display: 'inline-block' }} />
+                                            {liveRoomCount} en direct
+                                        </span>
+                                    )}
+                                </Link>
+                            )}
                         </div>
 
                         {isWorking && (() => {

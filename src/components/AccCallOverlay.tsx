@@ -1,6 +1,7 @@
 'use client';
 
 import { useAccCall } from '@/context/AccCallContext';
+import { useUI } from '@/context/UIContext';
 import { usePathname, useRouter } from 'next/navigation';
 import { PhoneOff, Maximize2, Timer } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
@@ -11,9 +12,15 @@ import Avatar from '@/components/Avatar';
 export const ACC_SIDEBAR_W = 272;
 
 export default function AccCallOverlay() {
-    const { callInfo, containerRef, endCall, callMinimized, maximizeCall } = useAccCall();
+    const { callInfo, containerRef, endCall, callMinimized, maximizeCall, isAccWorking } = useAccCall();
+    const { setIsWorking } = useUI();
     const pathname = usePathname();
     const router = useRouter();
+
+    // Keep global FOCUS indicator in sync with accountability session state
+    useEffect(() => {
+        setIsWorking(isAccWorking);
+    }, [isAccWorking, setIsWorking]);
 
     // Full-screen only when on the pair page AND not minimized
     const isOnCallFull = !!callInfo && pathname?.startsWith(`/accountability/${callInfo.pairId}`) && !callMinimized;

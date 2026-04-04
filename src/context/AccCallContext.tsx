@@ -19,6 +19,8 @@ interface AccCallCtx {
     endCall: () => void;
     minimizeCall: () => void;
     maximizeCall: () => void;
+    isAccWorking: boolean;
+    setIsAccWorking: (v: boolean) => void;
 }
 
 const Ctx = createContext<AccCallCtx>({} as AccCallCtx);
@@ -26,6 +28,7 @@ const Ctx = createContext<AccCallCtx>({} as AccCallCtx);
 export function AccCallProvider({ children }: { children: ReactNode }) {
     const [callInfo, setCallInfo] = useState<AccCallInfo | null>(null);
     const [callMinimized, setCallMinimized] = useState(false);
+    const [isAccWorking, setIsAccWorking] = useState(false);
     const zpRef = useRef<any>(null);
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -44,13 +47,14 @@ export function AccCallProvider({ children }: { children: ReactNode }) {
         zpRef.current = null;
         setCallInfo(null);
         setCallMinimized(false);
+        // Don't reset isAccWorking here — user may still be in a timer session without a call
     };
 
     const minimizeCall = () => setCallMinimized(true);
     const maximizeCall = () => setCallMinimized(false);
 
     return (
-        <Ctx.Provider value={{ callInfo, zpRef, containerRef, callMinimized, activateCall, endCall, minimizeCall, maximizeCall }}>
+        <Ctx.Provider value={{ callInfo, zpRef, containerRef, callMinimized, activateCall, endCall, minimizeCall, maximizeCall, isAccWorking, setIsAccWorking }}>
             {children}
         </Ctx.Provider>
     );

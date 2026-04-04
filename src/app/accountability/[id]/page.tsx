@@ -7,7 +7,7 @@ import {
     doc, getDoc, collection, onSnapshot, addDoc, serverTimestamp,
     query, orderBy, updateDoc, where, getDocs, deleteDoc, setDoc, arrayUnion, arrayRemove, increment
 } from 'firebase/firestore';
-import { ref as storageRef, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import { validateFileUpload } from '@/lib/uploadValidation';
 import { useAuth } from '@/context/AuthContext';
 import { useUI } from '@/context/UIContext';
@@ -16,15 +16,16 @@ import { useAccCall } from '@/context/AccCallContext';
 import { ACC_SIDEBAR_W } from '@/components/AccCallOverlay';
 import {
     ArrowLeft, Target, Zap, CheckCircle, Clock, AlertCircle,
-    ExternalLink, Edit3, Save, X, Link as LinkIcon,
+    ExternalLink, Edit3, Save, X, Link as LinkIcon, Link2,
     Calendar, Bot, Trash2, Plus, Play, Pause, RotateCcw, Video,
     CheckSquare, Square, Flag, Settings2, PhoneOff, Timer, LayoutDashboard,
     Menu, Compass, Users, MessageCircle, PenLine, Flame, Shield, ChevronDown, ChevronRight, Send,
-    Paperclip, Download, FileText, Upload
+    Paperclip, Download, FileText, Upload, MessageSquareDashed
 } from 'lucide-react';
 import Avatar from '@/components/Avatar';
 import Link from 'next/link';
 import CollabWhiteboard from '@/components/CollabWhiteboard';
+import FileAnnotationOverlay from '@/components/FileAnnotation';
 import { ConceptAIcon } from '@/components/BrilliPlanLogo';
 import { useTabParam } from '@/hooks/useTabParam';
 
@@ -216,9 +217,9 @@ function AccFileCard({ fileUrl, fileName, fileType, fileSize }: {
 function AccountabilityDetailContent() {
     const { id } = useParams();
     const { user } = useAuth();
-    const { setNavbarVisible, setIsWorking } = useUI();
+    const { setNavbarVisible, isWorking: isWorkingGlobal } = useUI();
     const router = useRouter();
-    const { callInfo, zpRef: callZpRef, containerRef: callContainerRef, activateCall, endCall, callMinimized, minimizeCall } = useAccCall();
+    const { callInfo, zpRef: callZpRef, containerRef: callContainerRef, activateCall, endCall, callMinimized, minimizeCall, setIsAccWorking } = useAccCall();
     const isOnCall = !!callInfo && callInfo.pairId === (id as string);
 
     // Core state
@@ -268,10 +269,11 @@ function AccountabilityDetailContent() {
             setViewMode(liveDoc.timer_mode);
         }
     }, [liveDoc?.timer_mode]);
-    const [callLoading, setCallLoading] = useState(false);
     const [pomCount, setPomCount] = useState(0);
     const [navOpen, setNavOpen] = useState(false);
     const sessionHeartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const callPresenceHeartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const [preloadTrigger, setPreloadTrigger] = useState(0);
 
     // Coworking state -- consider participant stale if last heartbeat > 2min ago
     const isPresenceFresh = (uid: string) => {
@@ -312,6 +314,18 @@ function AccountabilityDetailContent() {
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatFileInputRef = useRef<HTMLInputElement>(null);
 
+    // ─── Resources state (for call sidebar, same as salon) ───
+    const [callResources, setCallResources] = useState<{ id: string; title: string; url: string; type?: string; file_name?: string; file_size?: number; added_by: string; added_by_name: string; storage_path?: string }[]>([]);
+    const [showAddResource, setShowAddResource] = useState(false);
+    const [resType, setResType] = useState<'link' | 'file'>('link');
+    const [resTitle, setResTitle] = useState('');
+    const [resUrl, setResUrl] = useState('');
+    const [resFile, setResFile] = useState<File | null>(null);
+    const [resUploading, setResUploading] = useState(false);
+    const [resUploadProgress, setResUploadProgress] = useState(0);
+    const [showCallLeaveConfirm, setShowCallLeaveConfirm] = useState(false);
+    const [annotatingFile, setAnnotatingFile] = useState<{ id: string; title: string; url: string; file_name?: string; type: 'image' | 'pdf' } | null>(null);
+
     // ─── Effects ───
 
     useEffect(() => { if (!user || !id) return; loadPair(); }, [user, id]);
@@ -321,11 +335,10 @@ function AccountabilityDetailContent() {
         if (isOnCall && !callMinimized) { setNavbarVisible(false); return () => setNavbarVisible(true); }
     }, [isOnCall, callMinimized, setNavbarVisible]);
 
-    // Logo turns green when in coworking session
+    // Keep global FOCUS indicator in sync — persists across navigation via AccCallContext
     useEffect(() => {
-        setIsWorking(amInSession);
-        return () => setIsWorking(false);
-    }, [amInSession]);
+        setIsAccWorking(amInSession);
+    }, [amInSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Timer completion: when it reaches 0, reset and show animation -- never auto-restart
     useEffect(() => {
@@ -513,6 +526,74 @@ function AccountabilityDetailContent() {
         setSendingChat(false);
     };
 
+    // ─── Resources listener (for call sidebar) ───
+    useEffect(() => {
+        if (!id) return;
+        const unsub = onSnapshot(collection(db, 'accountability_pairs', id as string, 'session_resources'), snap => {
+            setCallResources(snap.docs.map(d => ({
+                id: d.id,
+                title: d.data().title || '',
+                url: d.data().url || '',
+                type: d.data().type,
+                file_name: d.data().file_name,
+                file_size: d.data().file_size,
+                added_by: d.data().added_by || '',
+                added_by_name: d.data().added_by_name || 'Membre',
+                storage_path: d.data().storage_path,
+            })));
+        });
+        return () => unsub();
+    }, [id]);
+
+    const addCallResource = async () => {
+        if (!id || !user) return;
+        const addedByName = (user as any).displayName || user.email?.split('@')[0] || 'Membre';
+        if (resType === 'file') {
+            if (!resFile) return;
+            const uploadErr = validateFileUpload(resFile);
+            if (uploadErr) { alert(uploadErr); return; }
+            setResUploading(true); setResUploadProgress(0);
+            try {
+                const sRef = storageRef(storage, `accountability/${id}/session_resources/${user.uid}_${Date.now()}_${resFile.name}`);
+                const task = uploadBytesResumable(sRef, resFile);
+                await new Promise<void>((resolve, reject) => {
+                    task.on('state_changed',
+                        snap => setResUploadProgress(Math.round(snap.bytesTransferred / snap.totalBytes * 100)),
+                        reject,
+                        async () => {
+                            const url = await getDownloadURL(task.snapshot.ref);
+                            await addDoc(collection(db, 'accountability_pairs', id as string, 'session_resources'), {
+                                title: resTitle.trim() || resFile.name,
+                                url, type: 'file',
+                                file_name: resFile.name, file_size: resFile.size,
+                                storage_path: task.snapshot.ref.fullPath,
+                                added_by: user.uid, added_by_name: addedByName,
+                                added_at: serverTimestamp(),
+                            });
+                            resolve();
+                        }
+                    );
+                });
+            } finally { setResUploading(false); setResUploadProgress(0); }
+        } else {
+            if (!resTitle.trim()) return;
+            const url = resUrl.trim();
+            const normalized = url && !/^https?:\/\//i.test(url) ? `https://${url}` : url;
+            await addDoc(collection(db, 'accountability_pairs', id as string, 'session_resources'), {
+                title: resTitle.trim(), url: normalized, type: 'link',
+                added_by: user.uid, added_by_name: addedByName,
+                added_at: serverTimestamp(),
+            });
+        }
+        setResTitle(''); setResUrl(''); setResFile(null); setShowAddResource(false);
+    };
+
+    const deleteCallResource = async (resId: string, storagePath?: string) => {
+        if (!id) return;
+        if (storagePath) { try { await deleteObject(storageRef(storage, storagePath)); } catch { /* already deleted */ } }
+        deleteDoc(doc(db, 'accountability_pairs', id as string, 'session_resources', resId));
+    };
+
     // ─── Nudge ───
     const handleNudge = async () => {
         if (!partner || nudging || nudgeSent) return;
@@ -697,6 +778,7 @@ function AccountabilityDetailContent() {
 
     const handleLeaveCoworking = async () => {
         if (!user) return;
+        setIsAccWorking(false);
         await updateDoc(liveRef, {
             participants: arrayRemove(user.uid),
             timer_running: false,
@@ -706,11 +788,24 @@ function AccountabilityDetailContent() {
     };
 
     const handleEndCall = () => {
-        const doc_ = liveDocRef.current;
-        if (doc_?.timer_running) {
-            updateDoc(liveRef, { timer_running: false, timer_base_seconds: 0, timer_started_at: null }).catch(() => {});
+        // Clear heartbeat
+        if (callPresenceHeartbeatRef.current) {
+            clearInterval(callPresenceHeartbeatRef.current);
+            callPresenceHeartbeatRef.current = null;
+        }
+        // Remove from participants + stop timer
+        if (user && id) {
+            const lRef = doc(db, 'accountability_pairs', id as string, 'coworking', 'live');
+            updateDoc(lRef, {
+                participants: arrayRemove(user.uid),
+                timer_running: false,
+                timer_base_seconds: 0,
+                timer_started_at: null,
+            }).catch(() => {});
         }
         endCall();
+        // Trigger re-preload for the next call (Phase 1 won't re-run on callInfo change)
+        setPreloadTrigger(t => t + 1);
     };
 
     const handleTimerStart = async () => {
@@ -830,54 +925,109 @@ function AccountabilityDetailContent() {
         setShowTimerSettings(false);
     };
 
-    // Video call -- init ZegoCloud when this page becomes the active call page
+    // ─── ZegoCloud Phase 1: pre-load SDK + token (no media yet, same pattern as salon) ─
+    const [zegoReady, setZegoReady] = useState<{ zp: any; scenarioMode: any } | null>(null);
+
     useEffect(() => {
-        if (!isOnCall || !user) return;
-        if (callZpRef.current) return;
+        if (!user || !id) return;
+        if (callZpRef.current || zegoReady) return; // already loaded or joined
 
         let cancelled = false;
-        setCallLoading(true);
 
-        const rafId = requestAnimationFrame(() => {
-            if (cancelled || !callContainerRef.current) return;
-            (async () => {
-                try {
-                    const { ZegoUIKitPrebuilt } = await import('@zegocloud/zego-uikit-prebuilt');
-                    if (cancelled || callZpRef.current) return;
-                    const roomId = `acc-${id}`;
-                    const userName = (user as any).full_name || user.displayName || user.email?.split('@')[0] || 'Membre';
-                    const tokenRes = await authFetch('/api/zego-token', { method: 'POST', body: JSON.stringify({ roomID: roomId, userName }) });
-                    if (!tokenRes.ok) return;
-                    const { token: kitToken } = await tokenRes.json();
-                    const zp = ZegoUIKitPrebuilt.create(kitToken);
-                    if (cancelled) { try { zp.destroy(); } catch { /* ignore */ } return; }
-                    callZpRef.current = zp;
-                    zp.joinRoom({
-                        container: callContainerRef.current,
-                        scenario: { mode: ZegoUIKitPrebuilt.VideoConference },
-                        showPreJoinView: false,
-                        turnOnCameraWhenJoining: true,
-                        turnOnMicrophoneWhenJoining: true,
-                        showLeavingView: false,
-                        showRoomDetailsButton: false,
-                        showInviteToCohostButton: false,
-                        showRemoveCohostButton: false,
-                        showRequestToCohostButton: false,
-                        layout: 'Auto',
-                        showUserList: false,
-                        onLeaveRoom: () => handleEndCall(),
-                    });
-                } catch (e) { console.error('[ZegoCall] error', e); }
-                finally { setCallLoading(false); }
-            })();
-        });
+        (async () => {
+            try {
+                const { ZegoUIKitPrebuilt } = await import('@zegocloud/zego-uikit-prebuilt');
+                if (cancelled) return;
+
+                const roomId = `acc-${id}`;
+                const userName = (user as any).full_name || user.displayName || user.email?.split('@')[0] || 'Membre';
+                const tokenRes = await authFetch('/api/zego-token', { method: 'POST', body: JSON.stringify({ roomID: roomId, userName }) });
+                if (!tokenRes.ok || cancelled) return;
+                const { token: kitToken } = await tokenRes.json();
+                const zp = ZegoUIKitPrebuilt.create(kitToken);
+                if (cancelled) { try { zp.destroy(); } catch { /* ignore */ } return; }
+
+                setZegoReady({ zp, scenarioMode: ZegoUIKitPrebuilt.VideoConference });
+            } catch (e) { console.error('[ZegoCall] pre-load error', e); }
+        })();
 
         return () => {
             cancelled = true;
-            cancelAnimationFrame(rafId);
+            setZegoReady(prev => {
+                if (prev?.zp) { try { prev.zp.destroy(); } catch { /* ignore */ } }
+                return null;
+            });
         };
+        // NOTE: callInfo intentionally NOT in deps — activating a call must not destroy the
+        // pre-loaded instance. preloadTrigger increments only when a call ends, triggering re-preload.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isOnCall]);
+    }, [user, id, preloadTrigger]);
+
+    // ─── ZegoCloud Phase 2a: show call UI (overlay) — triggered by button ─
+    const handleInitiateCall = () => {
+        if (!user || !partner) return;
+        // Activate call context → shows the full-screen call view with "Rejoindre" overlay
+        activateCall({
+            pairId: id as string,
+            partnerName: partner.full_name,
+            partnerId: partner.id,
+            partnerAvatarUrl: partner.avatar_url ?? null,
+            partnerAvatarStyle: partner.avatar_style ?? null,
+        });
+    };
+
+    // ─── ZegoCloud Phase 2b: join room on user click (preserves gesture context for autoplay) ─
+    const handleJoinCall = () => {
+        if (!zegoReady || !callContainerRef.current || !user || !id) return;
+        const { zp, scenarioMode } = zegoReady;
+
+        callZpRef.current = zp;
+        setZegoReady(null);
+
+        // Register in Firestore participants + start heartbeat (same as session page)
+        const lRef = doc(db, 'accountability_pairs', id as string, 'coworking', 'live');
+        setDoc(lRef, {
+            participants: arrayUnion(user.uid),
+            last_seen_map: { [user.uid]: serverTimestamp() },
+        }, { merge: true });
+
+        callPresenceHeartbeatRef.current = setInterval(() => {
+            setDoc(lRef, { last_seen_map: { [user.uid]: serverTimestamp() } }, { merge: true });
+        }, 30_000);
+
+        zp.joinRoom({
+            container: callContainerRef.current,
+            scenario: { mode: scenarioMode },
+            showPreJoinView: false,
+            turnOnCameraWhenJoining: true,
+            turnOnMicrophoneWhenJoining: true,
+            showLeavingView: false,
+            showLeaveRoomConfirmDialog: false,
+            showRoomDetailsButton: false,
+            showInviteToCohostButton: false,
+            showRemoveCohostButton: false,
+            showRequestToCohostButton: false,
+            layout: 'Auto',
+            showUserList: false,
+            onLeaveRoom: () => {
+                // Clear heartbeat
+                if (callPresenceHeartbeatRef.current) {
+                    clearInterval(callPresenceHeartbeatRef.current);
+                    callPresenceHeartbeatRef.current = null;
+                }
+                // Remove from participants + stop timer
+                const lRefCleanup = doc(db, 'accountability_pairs', id as string, 'coworking', 'live');
+                updateDoc(lRefCleanup, {
+                    participants: arrayRemove(user.uid),
+                    timer_running: false,
+                    timer_base_seconds: 0,
+                    timer_started_at: null,
+                }).catch(() => {});
+                endCall();
+                setPreloadTrigger(t => t + 1);
+            },
+        });
+    };
 
     // ─── UNIFIED PRESENCE: Heartbeat + Tab Close Cleanup ───
     useEffect(() => {
@@ -905,14 +1055,18 @@ function AccountabilityDetailContent() {
         };
     }, [amInSession, user, id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // ─── Call -> Session Transition ───
+    // ─── Call -> Session Transition: only join Firestore session when call activates ───
+    // Cleanup is handled in onLeaveRoom / handleEndCall to avoid stale closure bugs.
     useEffect(() => {
-        if (!user || !id) return;
-        if (isOnCall) {
-            handleJoinCoworking();
-        } else if (!isOnCall && !liveDoc?.timer_running && amInSession) {
-            handleLeaveCoworking();
-        }
+        if (!user || !id || !isOnCall) return;
+        const lRef = doc(db, 'accountability_pairs', id as string, 'coworking', 'live');
+        setDoc(lRef, {
+            participants: arrayUnion(user.uid),
+            last_seen_map: { [user.uid]: serverTimestamp() },
+            timer_running: false,
+            timer_mode: 'focus',
+            timer_duration: POMODORO_DURATIONS.focus,
+        }, { merge: true });
     }, [isOnCall, user, id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const getDaysSince = (ts: any): number | null => {
@@ -1003,17 +1157,52 @@ function AccountabilityDetailContent() {
                         from { opacity: 0; }
                         to   { opacity: 1; }
                     }
-                    .zp-confirm-dialog-bg,[class*="confirmDialog"],[class*="leaveDialog"]{background:rgba(0,0,0,0.7)!important;backdrop-filter:blur(8px)!important}
-                    .zp-confirm-dialog,[class*="confirmDialogContent"]{background:#1c1c21!important;border:1px solid rgba(255,255,255,0.08)!important;border-radius:16px!important;box-shadow:0 24px 60px rgba(0,0,0,0.7)!important;color:#ddd8d0!important;padding:28px!important;font-family:Figtree,-apple-system,BlinkMacSystemFont,sans-serif!important}
-                    .zp-confirm-dialog h4,.zp-confirm-dialog h3,[class*="confirmDialogContent"] h4,[class*="confirmDialogContent"] h3{color:#f4f4f5!important;font-size:1.05rem!important;font-weight:700!important}
-                    .zp-confirm-dialog p,[class*="confirmDialogContent"] p{color:#71717a!important;font-size:0.875rem!important}
-                    .zp-confirm-dialog button,[class*="confirmDialogContent"] button{border-radius:10px!important;font-weight:600!important;font-size:0.85rem!important;padding:9px 20px!important;border:none!important;cursor:pointer!important}
-                    .zp-confirm-dialog button:first-of-type,[class*="confirmDialogContent"] button:first-of-type{background:transparent!important;color:#a1a1aa!important;border:1px solid rgba(255,255,255,0.1)!important}
-                    .zp-confirm-dialog button:last-of-type,[class*="confirmDialogContent"] button:last-of-type{background:linear-gradient(135deg,#ef4444,#dc2626)!important;color:#fff!important;box-shadow:0 4px 14px rgba(239,68,68,0.35)!important}
+                    @keyframes scaleIn {
+                        from { transform: translate(-50%, -50%) scale(0.92); opacity: 0; }
+                        to   { transform: translate(-50%, -50%) scale(1);    opacity: 1; }
+                    }
+                    /* ── Hide ZegoCloud's native Leave dialog completely — we use our own ── */
+                    .zp-confirm-dialog-bg, .zp-confirm-dialog,
+                    [class*="confirmDialog"], [class*="leaveDialog"],
+                    [class*="ConfirmDialog"], [class*="LeaveDialog"] {
+                        display: none !important;
+                        visibility: hidden !important;
+                        opacity: 0 !important;
+                        pointer-events: none !important;
+                    }
                 `}</style>
 
+                {/* ── "Rejoindre" overlay — user click preserves gesture context for autoplay ── */}
+                {zegoReady && !callZpRef.current && (
+                    <div style={{
+                        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                        zIndex: 50, background: 'rgba(11,11,13,0.97)',
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                        gap: 16,
+                    }}>
+                        <div style={{ fontSize: '1.1rem', color: '#a1a1aa', fontWeight: 500 }}>
+                            Prêt à rejoindre l'appel avec {partner.full_name}
+                        </div>
+                        <button
+                            onClick={handleJoinCall}
+                            style={{
+                                padding: '14px 40px', borderRadius: 14,
+                                background: 'linear-gradient(135deg, #5eead4, #10b981)',
+                                color: '#0b0b0d', fontSize: '1rem', fontWeight: 700,
+                                border: 'none', cursor: 'pointer',
+                                boxShadow: '0 4px 24px rgba(94,234,212,0.4)',
+                                transition: 'transform 0.15s, box-shadow 0.15s',
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.05)'; e.currentTarget.style.boxShadow = '0 6px 32px rgba(94,234,212,0.55)'; }}
+                            onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = '0 4px 24px rgba(94,234,212,0.4)'; }}
+                        >
+                            Rejoindre l'appel
+                        </button>
+                    </div>
+                )}
+
                 <div style={{
-                    height: '100vh', marginTop: 'calc(-6.5rem)',
+                    height: '100vh', marginTop: '-56px',
                     display: 'flex', overflow: 'hidden',
                     fontFamily: 'Figtree, -apple-system, BlinkMacSystemFont, sans-serif',
                 }}>
@@ -1093,34 +1282,18 @@ function AccountabilityDetailContent() {
                                         border: '1px solid rgba(255,255,255,0.1)',
                                         borderRadius: 10, padding: '7px 14px',
                                         color: '#a1a1aa', fontSize: '0.75rem', fontWeight: 600,
-                                        cursor: 'pointer',
+                                        cursor: 'pointer', transition: 'background 0.2s',
                                     }}
                                     onMouseEnter={e => (e.currentTarget.style.background = 'rgba(40,40,50,0.9)')}
                                     onMouseLeave={e => (e.currentTarget.style.background = 'rgba(18,18,22,0.75)')}
                                 >
-                                    <LayoutDashboard size={13} /> Retour à l'accountability
-                                </button>
-                                {/* Raccrocher */}
-                                <button
-                                    onClick={handleEndCall}
-                                    style={{
-                                        display: 'flex', alignItems: 'center', gap: 6,
-                                        background: 'rgba(239,68,68,0.15)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-                                        border: '1px solid rgba(239,68,68,0.3)',
-                                        borderRadius: 10, padding: '7px 14px',
-                                        color: '#fca5a5', fontSize: '0.75rem', fontWeight: 600,
-                                        cursor: 'pointer',
-                                    }}
-                                    onMouseEnter={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.28)')}
-                                    onMouseLeave={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.15)')}
-                                >
-                                    <PhoneOff size={13} /> Raccrocher
+                                    <LayoutDashboard size={13} /> Retour à l&apos;accountability
                                 </button>
                             </div>
                         </div>
 
-                        {/* Loading spinner */}
-                        {callLoading && (
+                        {/* Loading spinner — shown briefly while ZegoCloud renders */}
+                        {isOnCall && !callZpRef.current && (
                             <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1rem', pointerEvents: 'none' }}>
                                 <div style={{ width: 48, height: 48, borderRadius: '50%', border: '3px solid rgba(16,185,129,0.3)', borderTopColor: '#10b981', animation: 'spin 1s linear infinite' }} />
                                 <span style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.5)' }}>Connexion en cours...</span>
@@ -1238,19 +1411,261 @@ function AccountabilityDetailContent() {
 
                             <div style={{ height: 1, background: 'rgba(255,255,255,0.05)' }} />
 
-                            {/* Raccrocher */}
-                            <button onClick={handleEndCall}
-                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px', borderRadius: 12, border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.12)', color: '#fca5a5', fontSize: '0.82rem', fontWeight: 700, cursor: 'pointer' }}
-                                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.22)')}
-                                onMouseLeave={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.12)')}>
-                                <PhoneOff size={15} /> Raccrocher
-                            </button>
+                            {/* Participants (actual presence from liveDoc) */}
+                            {(() => {
+                                const callParticipants = [
+                                    { uid: user!.uid, full_name: (user as any).full_name || user!.displayName || user!.email?.split('@')[0] || 'Moi', avatar_style: (user as any)?.avatar_style, avatar_url: (user as any)?.avatar_url, isMe: true, online: amInSession },
+                                    { uid: partner.id, full_name: partner.full_name, avatar_style: partner.avatar_style, avatar_url: partner.avatar_url, isMe: false, online: partnerInSession },
+                                ].filter(m => m.online);
+                                const connectedCount = callParticipants.length;
+                                return (
+                                    <div>
+                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                <span style={{ fontSize: '0.58rem', fontWeight: 700, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Dans la salle</span>
+                                                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#10b981', display: 'inline-block', boxShadow: '0 0 6px rgba(16,185,129,0.8)', animation: 'pulse-dot 2s ease-in-out infinite' }} />
+                                            </div>
+                                            <span style={{ fontSize: '0.65rem', fontWeight: 700, color: '#c8a960', background: 'rgba(200,169,96,0.1)', border: '1px solid rgba(200,169,96,0.2)', borderRadius: 6, padding: '1px 7px' }}>
+                                                {connectedCount}
+                                            </span>
+                                        </div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                                            {callParticipants.map((m, idx) => (
+                                                <div key={m.uid} style={{
+                                                    display: 'flex', alignItems: 'center', gap: 10,
+                                                    padding: '9px 11px', borderRadius: 12,
+                                                    background: m.isMe
+                                                        ? 'linear-gradient(135deg, rgba(200,169,96,0.1), rgba(200,169,96,0.04))'
+                                                        : idx % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent',
+                                                    border: m.isMe ? '1px solid rgba(200,169,96,0.2)' : '1px solid rgba(255,255,255,0.04)',
+                                                    position: 'relative', overflow: 'hidden',
+                                                }}>
+                                                    {m.isMe && <div style={{ position: 'absolute', left: 0, top: '20%', bottom: '20%', width: 2, borderRadius: 2, background: 'linear-gradient(180deg, #c8a960, #d4b872)' }} />}
+                                                    <div style={{ position: 'relative', flexShrink: 0 }}>
+                                                        <div style={{
+                                                            position: 'absolute', inset: -2, borderRadius: '50%',
+                                                            background: m.isMe
+                                                                ? 'conic-gradient(from 0deg, #c8a96066, #d4b87299, #c8a96066)'
+                                                                : 'conic-gradient(from 0deg, #10b98133, #10b98166, #10b98133)',
+                                                            animation: 'spin-ring 4s linear infinite',
+                                                        }} />
+                                                        <div style={{ position: 'relative', borderRadius: '50%', overflow: 'hidden' }}>
+                                                            <Avatar uid={m.uid} avatarStyle={m.avatar_style} avatarUrl={m.avatar_url} size={30} />
+                                                        </div>
+                                                        <span style={{ position: 'absolute', bottom: 0, right: -1, width: 8, height: 8, borderRadius: '50%', background: '#10b981', border: '1.5px solid #0f0f12', boxShadow: '0 0 6px rgba(16,185,129,0.8)' }} />
+                                                    </div>
+                                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.78rem', fontWeight: m.isMe ? 700 : 600, color: m.isMe ? '#e8d9a8' : '#ccc4b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                            {m.full_name || 'Membre'}
+                                                            {m.isMe && <span style={{ fontSize: '0.54rem', fontWeight: 700, color: '#0f0f12', background: '#c8a960', borderRadius: 4, padding: '1px 5px', letterSpacing: '0.04em', flexShrink: 0 }}>vous</span>}
+                                                        </div>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                                                            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#10b981', flexShrink: 0 }} />
+                                                            <span style={{ fontSize: '0.58rem', color: '#10b981', fontWeight: 500 }}>En session</span>
+                                                        </div>
+                                                    </div>
+                                                    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, flexShrink: 0 }}>
+                                                        {[3, 5, 7, 5, 3].map((h, i) => (
+                                                            <div key={i} style={{ width: 2, height: h, borderRadius: 2, background: m.isMe ? '#c8a960' : '#10b981', opacity: 0.35 + (i === 2 ? 0.45 : i === 1 || i === 3 ? 0.25 : 0.1) }} />
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                            {connectedCount === 0 && (
+                                                <div style={{ padding: '10px', textAlign: 'center', color: '#3f3f46', fontSize: '0.68rem' }}>En attente de connexion…</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+                            <style>{`
+                                @keyframes pulse-dot { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.4; transform:scale(0.7); } }
+                                @keyframes spin-ring { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+                            `}</style>
+
+                            <div style={{ height: 1, background: 'rgba(255,255,255,0.05)' }} />
+
+                            {/* Resources (same as salon) */}
+                            <div>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                        <Link2 size={12} style={{ color: '#c8a960' }} />
+                                        <span style={{ fontSize: '0.58rem', fontWeight: 700, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Ressources</span>
+                                    </div>
+                                    <button
+                                        onClick={() => setShowAddResource(v => !v)}
+                                        title="Ajouter une ressource"
+                                        style={{
+                                            width: 22, height: 22, borderRadius: 7, border: '1px solid rgba(200,169,96,0.25)',
+                                            background: showAddResource ? 'rgba(200,169,96,0.2)' : 'rgba(200,169,96,0.08)',
+                                            color: '#c8a960', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            cursor: 'pointer', transition: 'background 0.15s',
+                                        }}
+                                        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(200,169,96,0.25)')}
+                                        onMouseLeave={e => (e.currentTarget.style.background = showAddResource ? 'rgba(200,169,96,0.2)' : 'rgba(200,169,96,0.08)')}
+                                    >
+                                        <Plus size={11} />
+                                    </button>
+                                </div>
+
+                                {/* Add resource form */}
+                                {showAddResource && (
+                                    <div style={{ marginBottom: 10, padding: '10px', background: 'rgba(200,169,96,0.05)', borderRadius: 10, border: '1px solid rgba(200,169,96,0.12)', display: 'flex', flexDirection: 'column', gap: 7 }}>
+                                        <div style={{ display: 'flex', gap: 4, background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 3 }}>
+                                            {(['link', 'file'] as const).map(t => (
+                                                <button key={t} onClick={() => { setResType(t); setResTitle(''); setResUrl(''); setResFile(null); }} style={{
+                                                    flex: 1, padding: '5px 0', borderRadius: 6, border: 'none', fontSize: '0.67rem', fontWeight: 700, cursor: 'pointer', transition: 'all 0.15s',
+                                                    background: resType === t ? 'rgba(200,169,96,0.35)' : 'transparent',
+                                                    color: resType === t ? '#c7d2fe' : '#52525b',
+                                                }}>{t === 'link' ? 'Lien' : 'Fichier'}</button>
+                                            ))}
+                                        </div>
+                                        {resType === 'link' ? (
+                                            <>
+                                                <input placeholder="Titre *" value={resTitle} onChange={e => setResTitle(e.target.value)}
+                                                    style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: '7px 9px', color: '#ddd8d0', fontSize: '0.73rem', outline: 'none', fontFamily: 'inherit' }}
+                                                    onFocus={e => (e.currentTarget.style.borderColor = 'rgba(200,169,96,0.4)')}
+                                                    onBlur={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)')} />
+                                                <input placeholder="URL (optionnel)" value={resUrl} onChange={e => setResUrl(e.target.value)}
+                                                    style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: '7px 9px', color: '#ddd8d0', fontSize: '0.73rem', outline: 'none', fontFamily: 'inherit' }}
+                                                    onFocus={e => (e.currentTarget.style.borderColor = 'rgba(200,169,96,0.4)')}
+                                                    onBlur={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)')}
+                                                    onKeyDown={e => { if (e.key === 'Enter') addCallResource(); }} />
+                                            </>
+                                        ) : (
+                                            <>
+                                                <label style={{
+                                                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5,
+                                                    padding: '12px 8px', borderRadius: 8, border: `1px dashed ${resFile ? 'rgba(200,169,96,0.5)' : 'rgba(255,255,255,0.12)'}`,
+                                                    background: resFile ? 'rgba(200,169,96,0.07)' : 'rgba(255,255,255,0.02)',
+                                                    cursor: 'pointer', transition: 'all 0.15s',
+                                                }}>
+                                                    <Upload size={14} style={{ color: resFile ? '#c8a960' : '#52525b' }} />
+                                                    <span style={{ fontSize: '0.68rem', color: resFile ? '#c7d2fe' : '#52525b', textAlign: 'center', wordBreak: 'break-all' }}>
+                                                        {resFile ? resFile.name : 'Cliquer pour choisir un fichier'}
+                                                    </span>
+                                                    <input type="file" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) { setResFile(f); if (!resTitle) setResTitle(f.name); } }} />
+                                                </label>
+                                                <input placeholder="Titre (optionnel)" value={resTitle} onChange={e => setResTitle(e.target.value)}
+                                                    style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: '7px 9px', color: '#ddd8d0', fontSize: '0.73rem', outline: 'none', fontFamily: 'inherit' }}
+                                                    onFocus={e => (e.currentTarget.style.borderColor = 'rgba(200,169,96,0.4)')}
+                                                    onBlur={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)')} />
+                                            </>
+                                        )}
+                                        {resUploading && (
+                                            <div style={{ height: 4, borderRadius: 4, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                                                <div style={{ height: '100%', borderRadius: 4, background: 'linear-gradient(90deg, #c8a960, #c8a960)', width: `${resUploadProgress}%`, transition: 'width 0.2s' }} />
+                                            </div>
+                                        )}
+                                        <div style={{ display: 'flex', gap: 6 }}>
+                                            <button onClick={() => { setShowAddResource(false); setResTitle(''); setResUrl(''); setResFile(null); setResType('link'); }} style={{
+                                                flex: 1, padding: '6px 0', borderRadius: 7, border: '1px solid rgba(255,255,255,0.08)',
+                                                background: 'transparent', color: '#71717a', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer',
+                                            }}>Annuler</button>
+                                            <button onClick={addCallResource} disabled={resUploading || (resType === 'link' ? !resTitle.trim() : !resFile)} style={{
+                                                flex: 1, padding: '6px 0', borderRadius: 7, border: 'none',
+                                                background: (!resUploading && (resType === 'link' ? resTitle.trim() : resFile)) ? 'linear-gradient(135deg, #c8a960, #b89a50)' : 'rgba(200,169,96,0.2)',
+                                                color: (!resUploading && (resType === 'link' ? resTitle.trim() : resFile)) ? '#fff' : '#52525b',
+                                                fontSize: '0.72rem', fontWeight: 700, cursor: 'pointer', transition: 'opacity 0.15s',
+                                            }}>{resUploading ? `${resUploadProgress}%` : 'Ajouter'}</button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Resource list */}
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                    {callResources.length === 0 && (
+                                        <div style={{ padding: '10px', textAlign: 'center', color: '#3f3f46', fontSize: '0.68rem' }}>
+                                            Aucune ressource partagée
+                                        </div>
+                                    )}
+                                    {callResources.map(r => {
+                                        const isFile = r.type === 'file';
+                                        return (
+                                            <div key={r.id} style={{
+                                                display: 'flex', alignItems: 'center', gap: 9,
+                                                padding: '9px 11px', borderRadius: 12,
+                                                background: 'rgba(255,255,255,0.02)',
+                                                border: '1px solid rgba(255,255,255,0.06)',
+                                                backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+                                                transition: 'all 0.2s ease',
+                                            }}>
+                                                <div style={{
+                                                    width: 32, height: 32, borderRadius: 10,
+                                                    background: isFile ? 'rgba(16,185,129,0.1)' : 'rgba(200,169,96,0.1)',
+                                                    border: `1px solid ${isFile ? 'rgba(16,185,129,0.15)' : 'rgba(200,169,96,0.15)'}`,
+                                                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                                                    boxShadow: isFile ? '0 0 15px rgba(16,185,129,0.05)' : '0 0 15px rgba(200,169,96,0.05)',
+                                                }}>
+                                                    {isFile ? <FileText size={16} style={{ color: '#34d399' }} /> : <ExternalLink size={16} style={{ color: '#c8a960' }} />}
+                                                </div>
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#f4f4f5', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</div>
+                                                    <div style={{ fontSize: '0.65rem', color: '#71717a', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                                        <span style={{ width: 3, height: 3, borderRadius: '50%', background: '#ff0080' }}></span>
+                                                        par {r.added_by_name}
+                                                    </div>
+                                                </div>
+                                                <div style={{ display: 'flex', gap: 6 }}>
+                                                    {/* Annotate button for images and PDFs */}
+                                                    {isFile && r.url && (() => {
+                                                        const fn = (r.file_name || r.title || '').toLowerCase();
+                                                        const isImage = /\.(jpg|jpeg|png|gif|webp|svg|bmp)$/i.test(fn);
+                                                        const isPdf = /\.pdf$/i.test(fn);
+                                                        if (!isImage && !isPdf) return null;
+                                                        return (
+                                                            <button
+                                                                onClick={() => setAnnotatingFile({ id: r.id, title: r.title, url: r.url, file_name: r.file_name, type: isImage ? 'image' : 'pdf' })}
+                                                                title="Annoter"
+                                                                style={{
+                                                                    width: 24, height: 24, borderRadius: 8, flexShrink: 0,
+                                                                    background: 'rgba(94,234,212,0.08)', border: '1px solid rgba(94,234,212,0.18)',
+                                                                    color: '#5eead4', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                                    cursor: 'pointer', transition: 'all 0.15s',
+                                                                }}
+                                                                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(94,234,212,0.2)'; e.currentTarget.style.borderColor = 'rgba(94,234,212,0.35)'; }}
+                                                                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(94,234,212,0.08)'; e.currentTarget.style.borderColor = 'rgba(94,234,212,0.18)'; }}
+                                                            >
+                                                                <MessageSquareDashed size={13} />
+                                                            </button>
+                                                        );
+                                                    })()}
+                                                    {r.url && (
+                                                        <a href={r.url} target="_blank" rel="noopener noreferrer" title={isFile ? 'Télécharger' : 'Ouvrir'} style={{
+                                                            width: 24, height: 24, borderRadius: 8, flexShrink: 0,
+                                                            background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+                                                            color: '#f4f4f5', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                            textDecoration: 'none', transition: 'all 0.15s',
+                                                        }}
+                                                            onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.background = 'rgba(200,169,96,0.2)'; (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(200,169,96,0.3)'; }}
+                                                            onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.background = 'rgba(255,255,255,0.04)'; (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(255,255,255,0.08)'; }}>
+                                                            {isFile ? <Download size={13} /> : <ExternalLink size={13} />}
+                                                        </a>
+                                                    )}
+                                                    {r.added_by === user!.uid && (
+                                                        <button onClick={() => deleteCallResource(r.id, r.storage_path)} title="Supprimer" style={{
+                                                            width: 24, height: 24, borderRadius: 8, flexShrink: 0,
+                                                            background: 'transparent', border: '1px solid transparent',
+                                                            color: '#52525b', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                            cursor: 'pointer', transition: 'all 0.15s',
+                                                        }}
+                                                            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.12)'; e.currentTarget.style.borderColor = 'rgba(239,68,68,0.2)'; e.currentTarget.style.color = '#fca5a5'; }}
+                                                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent'; e.currentTarget.style.color = '#52525b'; }}>
+                                                            <Trash2 size={13} />
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
                         </div>
 
                         {/* Bottom tip */}
-                        <div style={{ padding: '10px 14px', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-                            <p style={{ fontSize: '0.62rem', color: '#3f3f46', margin: 0, lineHeight: 1.5 }}>
-                                💡 {draftDurations.focus} min focus · {draftDurations.short} min pause · ×4 → longue pause
+                        <div style={{ flexShrink: 0, margin: '0 14px 14px', padding: '9px 12px', background: 'rgba(200,169,96,0.05)', borderRadius: 10, border: '1px solid rgba(200,169,96,0.1)' }}>
+                            <p style={{ fontSize: '0.65rem', color: '#c8a960', margin: 0, lineHeight: 1.5, opacity: 0.8 }}>
+                                {draftDurations.focus} min focus · {draftDurations.short} min pause · ×4 → longue pause
                             </p>
                         </div>
                     </div>
@@ -1309,22 +1724,80 @@ function AccountabilityDetailContent() {
                                     </button>
                                 ))}
                             </div>
+                        </div>
+                    </>
+                )}
 
-                            {/* End call */}
-                            <div style={{ padding: '12px 14px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                                <button onClick={handleEndCall} style={{
-                                    width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-                                    padding: '10px 14px', borderRadius: 10,
-                                    background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.15)',
-                                    color: '#ef4444', fontSize: '0.83rem', fontWeight: 600, cursor: 'pointer', transition: 'background 0.2s',
-                                }}
-                                    onMouseEnter={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.14)')}
-                                    onMouseLeave={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.07)')}>
-                                    <PhoneOff size={15} /> Raccrocher
-                                </button>
+                {/* ── Custom leave confirmation modal (same as salon) ── */}
+                {showCallLeaveConfirm && (
+                    <>
+                        <div
+                            onClick={() => setShowCallLeaveConfirm(false)}
+                            style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)', animation: 'fadeOverlay 0.18s ease' }}
+                        />
+                        <div style={{
+                            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
+                            zIndex: 101, width: 340,
+                            background: '#1c1c21',
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            borderRadius: 18,
+                            boxShadow: '0 32px 72px rgba(0,0,0,0.8), 0 0 0 1px rgba(200,169,96,0.12)',
+                            padding: '28px 28px 24px',
+                            animation: 'scaleIn 0.2s cubic-bezier(0.16,1,0.3,1)',
+                            fontFamily: 'Figtree, -apple-system, BlinkMacSystemFont, sans-serif',
+                        }}>
+                            <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+                                <PhoneOff size={20} style={{ color: '#ef4444' }} />
+                            </div>
+                            <div style={{ fontSize: '1.05rem', fontWeight: 700, color: '#f4f4f5', marginBottom: 8 }}>
+                                Quitter l&apos;appel ?
+                            </div>
+                            <div style={{ fontSize: '0.85rem', color: '#71717a', lineHeight: 1.55, marginBottom: 24 }}>
+                                Tu vas quitter l&apos;appel avec {partner.full_name}. Tu pourras relancer un appel depuis la page accountability.
+                            </div>
+                            <div style={{ display: 'flex', gap: 10 }}>
+                                <button
+                                    onClick={() => setShowCallLeaveConfirm(false)}
+                                    style={{
+                                        flex: 1, padding: '10px 0', borderRadius: 10,
+                                        background: 'transparent', border: '1px solid rgba(255,255,255,0.1)',
+                                        color: '#a1a1aa', fontSize: '0.85rem', fontWeight: 600,
+                                        cursor: 'pointer', transition: 'background 0.15s, color 0.15s',
+                                    }}
+                                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = '#ddd8d0'; }}
+                                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#a1a1aa'; }}
+                                >Annuler</button>
+                                <button
+                                    onClick={handleEndCall}
+                                    style={{
+                                        flex: 1, padding: '10px 0', borderRadius: 10,
+                                        background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                                        border: 'none',
+                                        color: '#fff', fontSize: '0.85rem', fontWeight: 700,
+                                        cursor: 'pointer',
+                                        boxShadow: '0 4px 16px rgba(239,68,68,0.4)',
+                                        transition: 'opacity 0.15s, transform 0.15s',
+                                    }}
+                                    onMouseEnter={e => { e.currentTarget.style.opacity = '0.88'; e.currentTarget.style.transform = 'scale(1.02)'; }}
+                                    onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'scale(1)'; }}
+                                >Quitter</button>
                             </div>
                         </div>
                     </>
+                )}
+
+                {/* Annotation overlay */}
+                {annotatingFile && id && (
+                    <FileAnnotationOverlay
+                        parentType="objectives"
+                        parentId={`acc_${id as string}`}
+                        file={annotatingFile}
+                        memberships={[
+                            { user_id: user!.uid, user: { full_name: (user as any).full_name || user!.displayName || user!.email?.split('@')[0] || 'Moi', avatar_url: (user as any)?.avatar_url, avatar_style: (user as any)?.avatar_style } },
+                            { user_id: partner.id, user: { full_name: partner.full_name, avatar_url: partner.avatar_url, avatar_style: partner.avatar_style } },
+                        ]}
+                        onClose={() => setAnnotatingFile(null)}
+                    />
                 )}
             </>
         );
@@ -1648,9 +2121,16 @@ function AccountabilityDetailContent() {
                                 {nudgeSent ? <><CheckCircle size={13} /> Envoye</> : <><Zap size={13} /> Nudge</>}
                             </button>
 
-                            <button onClick={() => partner && activateCall({ pairId: id as string, partnerName: partner.full_name, partnerId: partner.id, partnerAvatarUrl: partner.avatar_url ?? null, partnerAvatarStyle: partner.avatar_style ?? null })} disabled={callLoading || isOnCall}
-                                style={{ padding: '8px 14px', borderRadius: 11, background: isOnCall ? 'rgba(94,234,212,0.12)' : 'rgba(94,234,212,0.06)', border: '1px solid rgba(94,234,212,0.25)', color: '#5eead4', fontFamily: 'var(--font-body), system-ui', fontSize: '0.8rem', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, transition: 'all 0.2s' }}>
-                                <Video size={13} /> {isOnCall ? 'En appel' : callLoading ? '...' : 'Appel'}
+                            <button
+                                onClick={() => {
+                                    if (isOnCall || (isWorkingGlobal && !amInSession)) return;
+                                    if (!amInSession) handleJoinCoworking();
+                                    handleInitiateCall();
+                                }}
+                                disabled={isOnCall || (isWorkingGlobal && !amInSession)}
+                                title={isWorkingGlobal && !amInSession ? 'Tu as déjà une session active ailleurs' : undefined}
+                                style={{ padding: '8px 14px', borderRadius: 11, background: isOnCall ? 'rgba(94,234,212,0.12)' : 'rgba(94,234,212,0.06)', border: '1px solid rgba(94,234,212,0.25)', color: '#5eead4', fontFamily: 'var(--font-body), system-ui', fontSize: '0.8rem', fontWeight: 700, cursor: (isOnCall || (isWorkingGlobal && !amInSession)) ? 'default' : 'pointer', display: 'flex', alignItems: 'center', gap: 5, transition: 'all 0.2s', opacity: (isWorkingGlobal && !amInSession) ? 0.4 : 1 }}>
+                                <Video size={13} /> {isOnCall ? 'En appel' : (isWorkingGlobal && !amInSession) ? 'Session active' : 'Appel'}
                             </button>
 
                             <div style={{ position: 'relative' }} ref={settingsPanelRef}>
@@ -2130,17 +2610,49 @@ function AccountabilityDetailContent() {
                                 ))}
                             </div>
                             {!amInSession ? (
-                                <button onClick={handleJoinCoworking} style={{ width: '100%', padding: '12px', borderRadius: 13, border: '1px solid rgba(94,234,212,0.25)', background: 'rgba(94,234,212,0.08)', color: '#5eead4', fontFamily: 'var(--font-display), system-ui', fontSize: '0.85rem', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, transition: 'all 0.25s' }}>
-                                    <Video size={14} /> Rejoindre la session
-                                </button>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                    {isWorkingGlobal ? (
+                                        <div style={{ padding: '12px', borderRadius: 13, border: '1px solid rgba(237,233,227,0.07)', background: 'rgba(237,233,227,0.02)', color: 'rgba(237,233,227,0.3)', fontSize: '0.82rem', fontWeight: 600, textAlign: 'center' }}>
+                                            Session active ailleurs sur la plateforme
+                                        </div>
+                                    ) : (
+                                        <>
+                                            {/* Primary: work alone, timer only */}
+                                            <button onClick={handleJoinCoworking} style={{ width: '100%', padding: '12px', borderRadius: 13, border: '1px solid rgba(200,169,96,0.3)', background: 'rgba(200,169,96,0.08)', color: '#c8a960', fontFamily: 'var(--font-display), system-ui', fontSize: '0.85rem', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, transition: 'all 0.25s' }}
+                                                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(200,169,96,0.15)'; }}
+                                                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(200,169,96,0.08)'; }}>
+                                                <Play size={14} /> Je commence à travailler
+                                            </button>
+                                            {/* Secondary: work + start a call */}
+                                            <button
+                                                onClick={() => { handleJoinCoworking(); handleInitiateCall(); }}
+                                                disabled={isOnCall}
+                                                style={{ width: '100%', padding: '10px', borderRadius: 13, border: '1px solid rgba(94,234,212,0.2)', background: 'rgba(94,234,212,0.05)', color: '#5eead4', fontFamily: 'var(--font-display), system-ui', fontSize: '0.8rem', fontWeight: 600, cursor: isOnCall ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, transition: 'all 0.25s', opacity: isOnCall ? 0.5 : 1 }}
+                                                onMouseEnter={e => { if (!isOnCall) e.currentTarget.style.background = 'rgba(94,234,212,0.1)'; }}
+                                                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(94,234,212,0.05)'; }}>
+                                                <Video size={13} /> Commencer avec un appel vidéo
+                                            </button>
+                                        </>
+                                    )}
+                                </div>
                             ) : (
-                                <button onClick={handleLeaveCoworking} className="ad-btn-ghost" style={{ width: '100%', justifyContent: 'center' }}>
-                                    <X size={14} /> Quitter la session
-                                </button>
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    {/* Start a call if not already on one */}
+                                    {!isOnCall && (
+                                        <button onClick={handleInitiateCall} style={{ flex: 1, padding: '10px', borderRadius: 13, border: '1px solid rgba(94,234,212,0.25)', background: 'rgba(94,234,212,0.07)', color: '#5eead4', fontFamily: 'var(--font-display), system-ui', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, transition: 'all 0.2s' }}
+                                            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(94,234,212,0.13)'; }}
+                                            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(94,234,212,0.07)'; }}>
+                                            <Video size={13} /> Rejoindre l&apos;appel
+                                        </button>
+                                    )}
+                                    <button onClick={handleLeaveCoworking} className="ad-btn-ghost" style={{ flex: 1, justifyContent: 'center' }}>
+                                        <X size={14} /> Quitter la session
+                                    </button>
+                                </div>
                             )}
                             {amInSession && partnerInSession && (
-                                <div style={{ marginTop: 12, padding: '9px 14px', borderRadius: 11, background: 'rgba(94,234,212,0.06)', border: '1px solid rgba(94,234,212,0.15)', fontSize: '0.8rem', color: '#5eead4', textAlign: 'center', fontWeight: 600 }}>
-                                    Vous etes en session ensemble !
+                                <div style={{ marginTop: 10, padding: '9px 14px', borderRadius: 11, background: 'rgba(94,234,212,0.06)', border: '1px solid rgba(94,234,212,0.15)', fontSize: '0.8rem', color: '#5eead4', textAlign: 'center', fontWeight: 600 }}>
+                                    Vous êtes en session ensemble !
                                 </div>
                             )}
                         </div>
