@@ -282,7 +282,7 @@ function FriendsContent() {
 
     const handleMessage = (friendUid: string) => {
         const convId = [user.uid, friendUid].sort().join('_');
-        router.push(`/ messages ? conv = ${convId} & to=${friendUid}`);
+        router.push(`/messages?conv=${convId}&to=${friendUid}`);
     };
 
     const handleSearchByEmail = async () => {

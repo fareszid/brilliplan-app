@@ -248,12 +248,14 @@ function MessageContent({ content, isMe }: { content: string; isMe: boolean }) {
 }
 
 interface ConvPreview {
-    convId:        string;
-    friendUid:     string;
-    friendProfile: any;
-    lastMessage?:  string;
-    lastTime?:     Date;
-    unread:        number;
+    convId:          string;
+    friendUid:       string;
+    friendProfile:   any;
+    lastMessage?:    string;
+    lastTime?:       Date;
+    unread:          number;
+    lastSenderId?:   string;
+    lastRead?:       boolean;
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
@@ -326,8 +328,8 @@ function MessagesContent() {
     // ── Real-time conversations list ────────────────────────────────────────
     useEffect(() => {
         if (!user) return;
-        const q1 = query(collection(db, 'friendships'), where('user1_id', '==', user.uid), where('status', '==', 'accepted'));
-        const q2 = query(collection(db, 'friendships'), where('user2_id', '==', user.uid), where('status', '==', 'accepted'));
+        const q1 = query(collection(db, 'friendships'), where('user1_id', '==', user.uid));
+        const q2 = query(collection(db, 'friendships'), where('user2_id', '==', user.uid));
 
         let snap1Docs: any[] = [];
         let snap2Docs: any[] = [];
@@ -346,22 +348,20 @@ function MessagesContent() {
                 const convs: ConvPreview[] = [];
                 for (const fdoc of allDocs) {
                     const data = fdoc.data();
+                    if (data.status !== 'accepted') continue;
                     const friendUid = data.user1_id === user.uid ? data.user2_id : data.user1_id;
                     const convId = getConvId(user.uid, friendUid);
 
-                    const userDoc = await getDoc(doc(db, 'users', friendUid));
-                    const profile = userDoc.exists()
-                        ? { id: userDoc.id, ...userDoc.data() }
-                        : { id: friendUid, full_name: 'Utilisateur', email: '' };
-
-                    const msgQ = query(collection(db, 'direct_messages', convId, 'messages'), orderBy('created_at', 'desc'), limit(1));
-                    const msgSnap = await getDocs(msgQ);
-                    const lastMsg = msgSnap.docs[0]?.data();
-
-                    const unreadQ = query(collection(db, 'direct_messages', convId, 'messages'), where('sender_id', '==', friendUid), where('read', '==', false));
-                    const unreadSnap = await getDocs(unreadQ);
-
-                    convs.push({ convId, friendUid, friendProfile: profile, lastMessage: lastMsg?.content, lastTime: lastMsg?.created_at?.toDate?.() ?? undefined, unread: unreadSnap.size });
+                    try {
+                        const userDoc = await getDoc(doc(db, 'users', friendUid));
+                        const profile = userDoc.exists()
+                            ? { id: userDoc.id, ...userDoc.data() }
+                            : { id: friendUid, full_name: 'Utilisateur', email: '' };
+                        // message preview will be filled by the real-time preview effect
+                        convs.push({ convId, friendUid, friendProfile: profile, unread: 0 });
+                    } catch (friendErr) {
+                        console.error('Error loading friend for conv', friendUid, friendErr);
+                    }
                 }
 
                 convs.sort((a, b) => (b.lastTime?.getTime() ?? 0) - (a.lastTime?.getTime() ?? 0));
@@ -405,6 +405,49 @@ function MessagesContent() {
         });
         return () => unsub();
     }, [activeConv]);
+
+    // ── Real-time message previews for each conversation ─────────────────
+    useEffect(() => {
+        if (!user || conversations.length === 0) return;
+        const unsubs = conversations.map(conv => {
+            const q = query(
+                collection(db, 'direct_messages', conv.convId, 'messages'),
+                orderBy('created_at', 'desc'),
+                limit(1),
+            );
+            return onSnapshot(q, snap => {
+                const last = snap.docs[0]?.data();
+                // Count unread from friend
+                const unreadQ = query(
+                    collection(db, 'direct_messages', conv.convId, 'messages'),
+                    where('sender_id', '==', conv.friendUid),
+                    where('read', '==', false),
+                );
+                getDocs(unreadQ).then(us => {
+                    setConversations(prev => {
+                        const updated = prev.map(c => c.convId !== conv.convId ? c : {
+                            ...c,
+                            lastMessage:  last?.file_url ? (last?.content || '📎 Fichier') : (last?.content ?? undefined),
+                            lastTime:     last?.created_at?.toDate?.() ?? undefined,
+                            lastSenderId: last?.sender_id ?? undefined,
+                            lastRead:     last?.read ?? false,
+                            unread:       us.size,
+                        });
+                        return updated.sort((a, b) => (b.lastTime?.getTime() ?? 0) - (a.lastTime?.getTime() ?? 0));
+                    });
+                }).catch(() => {
+                    setConversations(prev => prev.map(c => c.convId !== conv.convId ? c : {
+                        ...c,
+                        lastMessage:  last?.file_url ? (last?.content || '📎 Fichier') : (last?.content ?? undefined),
+                        lastTime:     last?.created_at?.toDate?.() ?? undefined,
+                        lastSenderId: last?.sender_id ?? undefined,
+                        lastRead:     last?.read ?? false,
+                    }));
+                });
+            });
+        });
+        return () => unsubs.forEach(u => u());
+    }, [conversations.map(c => c.convId).join(','), user?.uid]);
 
     // ── All friends' presence (for sidebar dots) ──────────────────────────
     useEffect(() => {
@@ -725,6 +768,22 @@ function MessagesContent() {
                                                     )}
                                                 </div>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                                    {conv.lastSenderId === user.uid && (
+                                                        <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
+                                                            {conv.lastRead ? (
+                                                                // Double check — seen
+                                                                <svg width="15" height="10" viewBox="0 0 15 10" fill="none" style={{ display: 'block' }}>
+                                                                    <path d="M1 5l3 3 5-7" stroke="#c8a960" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                                                    <path d="M5 5l3 3 5-7" stroke="#c8a960" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                                                </svg>
+                                                            ) : (
+                                                                // Single check — sent/delivered
+                                                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ display: 'block' }}>
+                                                                    <path d="M1 5l3 3 5-7" stroke="rgba(238,238,239,0.3)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                                                </svg>
+                                                            )}
+                                                        </span>
+                                                    )}
                                                     <span style={{ fontSize: '0.73rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: hasUnread ? C.textSecondary : C.textMuted, fontWeight: hasUnread ? 500 : 400, fontStyle: conv.lastMessage ? 'normal' : 'italic' }}>
                                                         {conv.lastMessage ?? 'Démarrer la conversation'}
                                                     </span>

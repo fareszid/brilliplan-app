@@ -194,6 +194,17 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
+    // ── Direct Messages ──
+    match /direct_messages/{convId} {
+      allow read, write: if isAuth();
+
+      match /messages/{msgId} {
+        allow read, write: if isAuth() && (
+          convId.matches('.*' + request.auth.uid + '.*')
+        );
+      }
+    }
+
     // ── Session Logs (Pomodoro history) ──
     match /session_logs/{logId} {
       allow read: if isAuth() && resource.data.user_id == request.auth.uid;
