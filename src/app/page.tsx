@@ -16,7 +16,7 @@ import {
     Dumbbell, BookMarked, Briefcase, PenTool, FlaskConical,
     Palette, ChevronRight, Play, Plus, Flame,
     Sparkles, CheckCircle, MessageSquare,
-    UserPlus, Timer,
+    UserPlus, Timer, CalendarDays, Flag, Zap, Rocket, Handshake, Phone,
 } from 'lucide-react';
 import { ConceptAIcon } from '@/components/BrilliPlanLogo';
 import Avatar from '@/components/Avatar';
@@ -622,6 +622,162 @@ function LandingPage() {
    AUTHENTICATED HOME (LOGGED IN)
    ═══════════════════════════════════════════════════════════ */
 
+/* ─── Today's Calendar Widget ── */
+const SOURCE_COLORS: Record<string, string> = {
+    'objective-session': '#c8a960',
+    'project-session': '#3b82f6',
+    'accountability-session': '#f59e0b',
+    'milestone': '#10b981',
+    'sprint': '#5eead4',
+    'recruiting-call': '#8b5cf6',
+};
+const SOURCE_ICONS: Record<string, typeof Target> = {
+    'objective-session': Target,
+    'project-session': Rocket,
+    'accountability-session': Handshake,
+    'milestone': Flag,
+    'sprint': Zap,
+    'recruiting-call': Phone,
+};
+
+function fmtEventTime(d: Date) {
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function TodayCalendarWidget({ uid }: { uid: string }) {
+    const [events, setEvents] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const today = new Date();
+
+    useEffect(() => {
+        const load = async () => {
+            try {
+                const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+                const allEvents: any[] = [];
+
+                const isTodayDate = (d: Date) =>
+                    d >= todayStart && d < todayEnd;
+
+                // Objective sessions
+                const memSnap = await getDocs(query(collection(db, 'memberships'), where('user_id', '==', uid)));
+                const objectiveIds = memSnap.docs.map(d => d.data().objective_id as string);
+                if (objectiveIds.length > 0) {
+                    const objTitles: Record<string, string> = {};
+                    await Promise.all(objectiveIds.map(async oid => {
+                        const s = await getDocs(query(collection(db, 'objectives'), where('__name__', '==', oid)));
+                        if (!s.empty) objTitles[oid] = s.docs[0].data().title;
+                    }));
+                    await Promise.all(objectiveIds.map(async oid => {
+                        const sessSnap = await getDocs(collection(db, 'objectives', oid, 'sessions'));
+                        sessSnap.docs.forEach(d => {
+                            const data = d.data();
+                            const date = data.scheduled_at?.toDate ? data.scheduled_at.toDate() : new Date(data.scheduled_at);
+                            if (isTodayDate(date)) allEvents.push({ id: d.id, title: data.title || 'Session', source: 'objective-session', date, subtitle: objTitles[oid] ?? '', href: `/objective/${oid}` });
+                        });
+                        const msSnap = await getDocs(collection(db, 'objectives', oid, 'roadmap_milestones'));
+                        msSnap.docs.forEach(d => {
+                            const data = d.data();
+                            if (!data.date) return;
+                            const date = new Date(data.date + 'T09:00:00');
+                            if (isTodayDate(date)) allEvents.push({ id: `ms-${d.id}`, title: data.title || 'Jalon', source: 'milestone', date, subtitle: objTitles[oid] ?? '', href: `/objective/${oid}` });
+                        });
+                    }));
+                }
+
+                // Project sessions
+                const projMemSnap = await getDocs(query(collection(db, 'project_memberships'), where('user_id', '==', uid)));
+                const projectIds = projMemSnap.docs.map(d => d.data().project_id as string);
+                if (projectIds.length > 0) {
+                    const projTitles: Record<string, string> = {};
+                    await Promise.all(projectIds.map(async pid => {
+                        const s = await getDoc(doc(db, 'projects', pid));
+                        if (s.exists()) projTitles[pid] = s.data().title;
+                    }));
+                    await Promise.all(projectIds.map(async pid => {
+                        const sessSnap = await getDocs(collection(db, 'projects', pid, 'sessions'));
+                        sessSnap.docs.forEach(d => {
+                            const data = d.data();
+                            const date = data.scheduled_at?.toDate ? data.scheduled_at.toDate() : new Date(data.scheduled_at);
+                            if (isTodayDate(date)) allEvents.push({ id: `ps-${d.id}`, title: data.title || 'Session', source: 'project-session', date, subtitle: projTitles[pid] ?? '', href: `/project/${pid}` });
+                        });
+                    }));
+                }
+
+                allEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
+                setEvents(allEvents);
+            } catch { /* ignore */ } finally {
+                setLoading(false);
+            }
+        };
+        load();
+    }, [uid]);
+
+    const dayName = today.toLocaleDateString('fr-FR', { weekday: 'long' });
+    const dayNum = today.getDate();
+    const monthName = today.toLocaleDateString('fr-FR', { month: 'long' });
+
+    return (
+        <div style={{ background: 'rgba(19,19,22,0.6)', border: '1px solid rgba(237,233,227,0.06)', borderRadius: 18, padding: '1.25rem', overflow: 'hidden', position: 'relative' }}>
+            {/* Top accent */}
+            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2, background: 'linear-gradient(90deg, #3b82f6, #5eead4)' }} />
+
+            {/* Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 3, height: 14, borderRadius: 2, background: '#3b82f6' }} />
+                    <h3 style={{ margin: 0, fontSize: '0.78rem', fontWeight: 700, color: 'rgba(237,233,227,0.35)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                        Aujourd'hui
+                    </h3>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                    <span style={{ fontSize: '1.15rem', fontWeight: 900, color: '#ede9e3', fontFamily: 'var(--font-display)', letterSpacing: '-0.03em' }}>{dayNum}</span>
+                    <span style={{ fontSize: '0.7rem', color: 'rgba(237,233,227,0.3)', fontWeight: 500, textTransform: 'capitalize' }}>{dayName} · {monthName}</span>
+                </div>
+            </div>
+
+            {loading ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '1rem 0' }}>
+                    <div style={{ width: 20, height: 20, borderRadius: '50%', border: '2px solid rgba(59,130,246,0.2)', borderTopColor: '#3b82f6', animation: 'spin 0.8s linear infinite' }} />
+                </div>
+            ) : events.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '1.25rem 0' }}>
+                    <CalendarDays size={24} style={{ color: 'rgba(237,233,227,0.1)', margin: '0 auto 8px', display: 'block' }} />
+                    <div style={{ fontSize: '0.75rem', color: 'rgba(237,233,227,0.2)', fontWeight: 500 }}>Rien de prévu aujourd'hui</div>
+                    <a href="/calendar" style={{ display: 'inline-block', marginTop: 8, fontSize: '0.68rem', color: '#3b82f6', fontWeight: 600, textDecoration: 'none' }}>Planifier une session →</a>
+                </div>
+            ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {events.map(ev => {
+                        const color = SOURCE_COLORS[ev.source] ?? '#c8a960';
+                        const Icon = SOURCE_ICONS[ev.source] ?? CalendarDays;
+                        const now = new Date();
+                        const isPast = ev.date < now;
+                        const isNext = !isPast && events.find(e => e.date >= now)?.id === ev.id;
+                        return (
+                            <a key={ev.id} href={ev.href} style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 11, background: isNext ? `${color}12` : 'rgba(237,233,227,0.02)', border: `1px solid ${isNext ? `${color}30` : 'rgba(237,233,227,0.05)'}`, opacity: isPast ? 0.45 : 1, transition: 'background 0.15s' }}>
+                                <div style={{ width: 28, height: 28, borderRadius: 8, background: `${color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                    <Icon size={13} color={color} />
+                                </div>
+                                <div style={{ minWidth: 0, flex: 1 }}>
+                                    <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#ede9e3', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.title}</div>
+                                    <div style={{ fontSize: '0.62rem', color: 'rgba(237,233,227,0.3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.subtitle}</div>
+                                </div>
+                                <div style={{ fontSize: '0.65rem', fontWeight: 700, color: isNext ? color : 'rgba(237,233,227,0.25)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                                    {fmtEventTime(ev.date)}
+                                </div>
+                            </a>
+                        );
+                    })}
+                    <a href="/calendar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, marginTop: 4, fontSize: '0.68rem', color: '#3b82f6', fontWeight: 600, textDecoration: 'none', opacity: 0.7 }}>
+                        Voir tout le calendrier <ChevronRight size={11} />
+                    </a>
+                </div>
+            )}
+        </div>
+    );
+}
+
 function AuthenticatedHome({ uid, displayName, email }: { uid: string; displayName: string | null; email: string | null }) {
     const router = useRouter();
     const [objectives, setObjectives] = useState<any[]>([]);
@@ -755,94 +911,104 @@ function AuthenticatedHome({ uid, displayName, email }: { uid: string; displayNa
     ];
     const todayQuote = QUOTES[new Date().getDay()];
 
+    const pct = Math.min(100, Math.round(((lastObj?.my_hours ?? 0) / (lastObj?.target_hours || 1)) * 100));
+
     return (
-        <div style={{ maxWidth: '960px', margin: '0 auto', padding: '1rem 2rem 5rem' }}>
+        <div style={{ maxWidth: '1080px', margin: '0 auto', padding: '2rem 2rem 6rem' }}>
+            <style>{`
+                @keyframes home-fade { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+                @keyframes pulse-dot { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:0.4;transform:scale(0.7);} }
+                @keyframes spin { to { transform: rotate(360deg); } }
+                .home-card { background: rgba(19,19,22,0.55); border: 1px solid rgba(237,233,227,0.06); border-radius: 20px; }
+                .home-resume:hover { border-color: rgba(200,169,96,0.4) !important; transform: translateY(-2px); }
+                .home-friend:hover { background: rgba(237,233,227,0.04) !important; }
+                @media (max-width: 860px) {
+                    .home-grid { grid-template-columns: 1fr !important; }
+                    .home-stats { grid-template-columns: repeat(2,1fr) !important; }
+                }
+            `}</style>
 
-            {/* ── Welcome header ── */}
-            <div style={{
-                marginBottom: '2rem',
-                animation: 'fadeIn 0.5s ease-out both',
-            }}>
-                <div style={{ fontSize: '0.78rem', color: 'rgba(237,233,227,0.3)', fontWeight: 500, marginBottom: '4px', textTransform: 'capitalize' }}>
-                    {dateStr}
-                </div>
-                <h1 style={{
-                    fontFamily: 'var(--font-display)',
-                    fontSize: 'clamp(1.6rem, 3vw, 2.4rem)', fontWeight: 900,
-                    letterSpacing: '-0.04em', lineHeight: 1.1, margin: 0,
-                }}>
-                    {greeting},{' '}
-                    <span style={{
-                        background: 'linear-gradient(125deg, #c8a960, #5eead4)',
-                        WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
-                    }}>{firstName}</span>
-                </h1>
-            </div>
-
-            {/* ── Quick stats ── */}
-            <div style={{
-                display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem',
-                marginBottom: '2rem',
-                animation: 'fadeIn 0.5s ease-out 0.1s both',
-            }}>
-                {[
-                    { label: 'Total heures', value: fmtH(totalHours), Icon: Clock, color: '#c8a960' },
-                    { label: 'Objectifs', value: String(objectives.length), Icon: Target, color: '#5eead4' },
-                    { label: 'Sessions', value: String(recentSessions.length), Icon: Timer, color: '#10b981' },
-                    { label: 'Streak', value: streak > 0 ? `${streak}j` : '—', Icon: Flame, color: '#f59e0b' },
-                ].map((s, i) => (
-                    <div key={i} style={{
-                        background: 'rgba(19,19,22,0.6)', border: '1px solid rgba(237,233,227,0.06)',
-                        borderRadius: '16px', padding: '1.25rem',
-                        position: 'relative', overflow: 'hidden',
-                    }}>
-                        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: `linear-gradient(90deg, transparent, ${s.color}60, transparent)` }} />
-                        <s.Icon size={15} style={{ color: s.color, marginBottom: '0.75rem', opacity: 0.8 }} />
-                        <div style={{ fontSize: '1.6rem', fontWeight: 900, lineHeight: 1, color: '#ede9e3', letterSpacing: '-0.03em', fontFamily: 'var(--font-display)' }}>{s.value}</div>
-                        <div style={{ fontSize: '0.68rem', color: 'rgba(237,233,227,0.3)', marginTop: '0.4rem', fontWeight: 500 }}>{s.label}</div>
+            {/* ══ HEADER BAND ══ */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '2rem', marginBottom: '2.25rem', animation: 'home-fade 0.5s ease-out both' }}>
+                {/* Greeting */}
+                <div>
+                    <div style={{ fontSize: '0.72rem', color: 'rgba(237,233,227,0.28)', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'capitalize', marginBottom: '6px' }}>
+                        {dateStr}
                     </div>
-                ))}
-            </div>
+                    <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 'clamp(1.8rem, 3vw, 2.6rem)', fontWeight: 900, letterSpacing: '-0.04em', lineHeight: 1.05, margin: 0 }}>
+                        {greeting},{' '}
+                        <span style={{ background: 'linear-gradient(125deg, #c8a960 30%, #5eead4)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+                            {firstName}
+                        </span>
+                    </h1>
+                </div>
 
-            {/* ── Quick actions ── */}
-            <div style={{
-                display: 'flex', gap: '0.6rem', marginBottom: '2rem', flexWrap: 'wrap',
-                animation: 'fadeIn 0.5s ease-out 0.15s both',
-            }}>
-                {[
-                    { label: 'Mon dashboard', Icon: Target, href: '/dashboard', color: '#c8a960', primary: true },
-                    { label: 'Explorer', Icon: Sparkles, href: '/explore', color: '#5eead4' },
-                    { label: 'Calendrier', Icon: Calendar, href: '/calendar', color: '#10b981' },
-                    { label: 'Messages', Icon: MessageSquare, href: '/messages', color: '#f59e0b' },
-                    { label: 'Accountability', Icon: Users, href: '/accountability', color: '#f472b6' },
-                ].map((a, i) => (
-                    <Link key={i} href={a.href} style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '8px',
-                        padding: a.primary ? '10px 20px' : '10px 16px',
-                        borderRadius: '12px',
-                        background: a.primary ? '#c8a960' : 'rgba(237,233,227,0.04)',
-                        border: a.primary ? 'none' : '1px solid rgba(237,233,227,0.08)',
-                        color: a.primary ? '#0b0b0d' : 'rgba(237,233,227,0.55)',
-                        fontSize: '0.82rem', fontWeight: a.primary ? 700 : 600,
-                        textDecoration: 'none',
-                        transition: 'transform 0.15s, background 0.15s',
-                    }}
-                        onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; }}
-                        onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; }}
-                    >
-                        <a.Icon size={15} /> {a.label}
-                    </Link>
-                ))}
+                {/* Stat pills — inline with header, no full card row */}
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end', paddingTop: '0.25rem' }}>
+                    {[
+                        { label: fmtH(totalHours), sub: 'heures', color: '#c8a960' },
+                        { label: String(objectives.length), sub: 'objectifs', color: '#5eead4' },
+                        { label: streak > 0 ? `${streak}j` : '—', sub: 'streak', color: '#f59e0b' },
+                    ].map((s, i) => (
+                        <div key={i} style={{ textAlign: 'center', padding: '10px 18px', borderRadius: '14px', background: 'rgba(19,19,22,0.6)', border: '1px solid rgba(237,233,227,0.07)', minWidth: 64 }}>
+                            <div style={{ fontSize: '1.3rem', fontWeight: 900, color: s.color, fontFamily: 'var(--font-display)', letterSpacing: '-0.03em', lineHeight: 1 }}>{s.label}</div>
+                            <div style={{ fontSize: '0.58rem', color: 'rgba(237,233,227,0.28)', fontWeight: 600, marginTop: 3, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{s.sub}</div>
+                        </div>
+                    ))}
+                </div>
             </div>
 
             {/* Weekly report modal */}
             <WeeklyReport sessionLogs={recentSessions} />
 
-            {/* ── Main content ── */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: '1.5rem', animation: 'fadeIn 0.5s ease-out 0.2s both' }}>
+            {/* ══ MAIN GRID ══ */}
+            <div className="home-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 308px', gap: '1.25rem', animation: 'home-fade 0.5s ease-out 0.1s both' }}>
 
-                {/* ── Left column ── */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                {/* ── LEFT COLUMN ── */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+
+                    {/* Hero: Resume last objective */}
+                    {lastObj ? (
+                        <div
+                            className="home-resume"
+                            onClick={() => router.push(`/objective/${lastObj.id}`)}
+                            style={{
+                                position: 'relative', overflow: 'hidden', cursor: 'pointer',
+                                borderRadius: 20, padding: '1.75rem',
+                                background: 'linear-gradient(135deg, rgba(200,169,96,0.1) 0%, rgba(94,234,212,0.04) 100%)',
+                                border: '1px solid rgba(200,169,96,0.2)',
+                                transition: 'border-color 0.2s, transform 0.2s',
+                            }}
+                        >
+                            {/* Ambient glow */}
+                            <div style={{ position: 'absolute', top: -40, right: -40, width: 180, height: 180, borderRadius: '50%', background: 'radial-gradient(circle, rgba(200,169,96,0.12) 0%, transparent 70%)', pointerEvents: 'none' }} />
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: '0.9rem' }}>
+                                <Play size={11} style={{ color: '#c8a960' }} />
+                                <span style={{ fontSize: '0.62rem', fontWeight: 800, color: 'rgba(200,169,96,0.6)', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Reprendre</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '1rem' }}>
+                                <div style={{ minWidth: 0 }}>
+                                    <h2 style={{ margin: '0 0 6px', fontSize: '1.35rem', fontWeight: 800, color: '#ede9e3', fontFamily: 'var(--font-display)', letterSpacing: '-0.03em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {lastObj.title}
+                                    </h2>
+                                    <div style={{ fontSize: '0.72rem', color: 'rgba(237,233,227,0.35)', fontWeight: 500 }}>
+                                        {fmtH(lastObj.my_hours || 0)} travaillées · {pct}% complété
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, padding: '8px 14px', borderRadius: 12, background: 'rgba(200,169,96,0.15)', border: '1px solid rgba(200,169,96,0.3)', color: '#c8a960', fontSize: '0.78rem', fontWeight: 700 }}>
+                                    Ouvrir <ArrowRight size={14} />
+                                </div>
+                            </div>
+                            <div style={{ marginTop: '1.1rem', height: 4, borderRadius: 4, background: 'rgba(237,233,227,0.06)', overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(90deg, #c8a960, #5eead4)', borderRadius: 4, transition: 'width 0.8s ease' }} />
+                            </div>
+                        </div>
+                    ) : (
+                        <Link href="/dashboard" style={{ textDecoration: 'none', display: 'block', borderRadius: 20, padding: '1.75rem', background: 'rgba(200,169,96,0.04)', border: '1px dashed rgba(200,169,96,0.15)', textAlign: 'center' }}>
+                            <Plus size={20} style={{ color: 'rgba(200,169,96,0.4)', marginBottom: 8 }} />
+                            <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'rgba(237,233,227,0.3)' }}>Créer ton premier objectif</div>
+                        </Link>
+                    )}
 
                     {/* Daily goals */}
                     <DailyGoals />
@@ -850,121 +1016,65 @@ function AuthenticatedHome({ uid, displayName, email }: { uid: string; displayNa
                     {/* Weekly check-in */}
                     <WeeklyCheckIn />
 
-                    {/* Weekly activity chart */}
-                    <div style={{
-                        background: 'rgba(19,19,22,0.6)', border: '1px solid rgba(237,233,227,0.06)',
-                        borderRadius: '18px', padding: '1.5rem',
-                    }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <div style={{ width: 3, height: 14, borderRadius: 2, background: '#c8a960' }} />
-                                <h2 style={{ fontSize: '0.82rem', fontWeight: 700, color: 'rgba(237,233,227,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
-                                    Cette semaine
-                                </h2>
-                            </div>
-                            <Link href="/profile?tab=activity" style={{ fontSize: '0.7rem', color: '#c8a960', fontWeight: 600, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 4 }}>
-                                Détails <ChevronRight size={12} />
+                    {/* Weekly chart */}
+                    <div className="home-card" style={{ padding: '1.4rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.1rem' }}>
+                            <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'rgba(237,233,227,0.35)', textTransform: 'uppercase', letterSpacing: '0.09em' }}>Cette semaine</span>
+                            <Link href="/profile?tab=activity" style={{ fontSize: '0.68rem', color: '#c8a960', fontWeight: 600, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 3 }}>
+                                Détails <ChevronRight size={11} />
                             </Link>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '6px', height: '100px' }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '5px', height: '80px' }}>
                             {weeklyData.map((d, i) => {
-                                const pct = maxWeekHrs > 0 ? (d.hours / maxWeekHrs) * 100 : 0;
+                                const p = maxWeekHrs > 0 ? (d.hours / maxWeekHrs) * 100 : 0;
                                 const isToday = i === 6;
                                 return (
-                                    <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-                                        <div style={{
-                                            width: '100%', maxWidth: '32px',
-                                            height: `${Math.max(pct, 4)}%`,
-                                            borderRadius: '6px 6px 4px 4px',
-                                            background: d.hours > 0
-                                                ? isToday ? 'linear-gradient(180deg, #c8a960, #a8893e)' : 'rgba(200,169,96,0.35)'
-                                                : 'rgba(237,233,227,0.04)',
-                                            transition: 'height 0.5s ease',
-                                            minHeight: '4px',
-                                        }} />
-                                        <span style={{
-                                            fontSize: '0.6rem', fontWeight: isToday ? 700 : 500,
-                                            color: isToday ? '#c8a960' : 'rgba(237,233,227,0.25)',
-                                        }}>{d.label}</span>
+                                    <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px' }}>
+                                        <div style={{ width: '100%', maxWidth: 28, height: `${Math.max(p, 5)}%`, minHeight: 4, borderRadius: '5px 5px 3px 3px', background: d.hours > 0 ? (isToday ? 'linear-gradient(180deg,#c8a960,#a8893e)' : 'rgba(200,169,96,0.3)') : 'rgba(237,233,227,0.04)', transition: 'height 0.6s ease' }} />
+                                        <span style={{ fontSize: '0.58rem', fontWeight: isToday ? 700 : 500, color: isToday ? '#c8a960' : 'rgba(237,233,227,0.22)' }}>{d.label}</span>
                                     </div>
                                 );
                             })}
                         </div>
                         {weeklyData.every(d => d.hours === 0) && (
-                            <div style={{ textAlign: 'center', padding: '0.5rem 0 0', fontSize: '0.78rem', color: 'rgba(237,233,227,0.2)' }}>
-                                Aucune activité cette semaine — lance une session !
-                            </div>
+                            <div style={{ textAlign: 'center', marginTop: '0.5rem', fontSize: '0.72rem', color: 'rgba(237,233,227,0.18)' }}>Aucune activité — lance une session !</div>
                         )}
                     </div>
 
-                    {/* Continue where you left off */}
-                    {lastObj && (
-                        <div
-                            onClick={() => router.push(`/objective/${lastObj.id}`)}
-                            style={{
-                                background: 'rgba(200,169,96,0.05)', border: '1px solid rgba(200,169,96,0.15)',
-                                borderRadius: '18px', padding: '1.5rem', cursor: 'pointer',
-                                transition: 'border-color 0.2s, transform 0.15s',
-                            }}
-                            onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(200,169,96,0.35)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
-                            onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(200,169,96,0.15)'; e.currentTarget.style.transform = 'translateY(0)'; }}
-                        >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.75rem' }}>
-                                <Play size={13} style={{ color: '#c8a960' }} />
-                                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'rgba(237,233,227,0.35)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                                    Reprendre
-                                </span>
+                    {/* Recent sessions */}
+                    {recentSessions.length > 0 && (
+                        <div className="home-card" style={{ padding: '1.25rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.85rem' }}>
+                                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'rgba(237,233,227,0.35)', textTransform: 'uppercase', letterSpacing: '0.09em' }}>Sessions récentes</span>
+                                <Link href="/profile?tab=activity" style={{ fontSize: '0.68rem', color: '#5eead4', fontWeight: 600, textDecoration: 'none' }}>Tout voir</Link>
                             </div>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
-                                <div style={{ minWidth: 0 }}>
-                                    <h3 style={{ margin: '0 0 4px', fontSize: '1rem', fontWeight: 700, color: '#ede9e3', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {lastObj.title}
-                                    </h3>
-                                    <div style={{ fontSize: '0.75rem', color: 'rgba(237,233,227,0.3)' }}>
-                                        {fmtH(lastObj.my_hours || 0)} / {fmtH(lastObj.target_hours || 0)} — {Math.min(100, Math.round(((lastObj.my_hours ?? 0) / (lastObj.target_hours || 1)) * 100))}%
-                                    </div>
-                                </div>
-                                <div style={{
-                                    width: 44, height: 44, borderRadius: '12px',
-                                    background: 'rgba(200,169,96,0.12)', border: '1px solid rgba(200,169,96,0.25)',
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                                }}>
-                                    <ArrowRight size={18} style={{ color: '#c8a960' }} />
-                                </div>
-                            </div>
-                            <div style={{ height: 3, borderRadius: 2, background: 'rgba(237,233,227,0.06)', overflow: 'hidden', marginTop: '0.75rem' }}>
-                                <div style={{ height: '100%', width: `${Math.min(100, Math.round(((lastObj.my_hours ?? 0) / (lastObj.target_hours || 1)) * 100))}%`, background: 'linear-gradient(90deg, #c8a960, #5eead4)', borderRadius: 2 }} />
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                                {recentSessions.slice(0, 4).map((s: any) => {
+                                    const dt = s.started_at?.toDate?.();
+                                    const col: Record<string,string> = { objective: '#c8a960', project: '#5eead4', accountability: '#f59e0b' };
+                                    const c = col[s.type] || '#c8a960';
+                                    return (
+                                        <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', borderRadius: 10, background: 'rgba(237,233,227,0.02)' }}>
+                                            <div style={{ width: 4, height: 4, borderRadius: '50%', background: c, flexShrink: 0 }} />
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'rgba(237,233,227,0.6)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title || 'Session'}</div>
+                                            </div>
+                                            <div style={{ fontSize: '0.62rem', color: 'rgba(237,233,227,0.22)', flexShrink: 0 }}>
+                                                {dt ? dt.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) : ''} · {fmtH(s.duration_hours || 0)}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
                     )}
-
-                    {/* Quick links grid */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.6rem' }}>
-                        {[
-                            { label: 'Amis', desc: 'Gérer tes connexions', Icon: UserPlus, href: '/friends', color: '#10b981' },
-                            { label: 'Profil', desc: 'Statistiques & paramètres', Icon: BarChart2, href: '/profile', color: '#5eead4' },
-                            { label: 'Trouver un partenaire', desc: 'Accountability', Icon: Users, href: '/find-teammates', color: '#f59e0b' },
-                        ].map((item, i) => (
-                            <Link key={i} href={item.href} style={{
-                                textDecoration: 'none',
-                                background: 'rgba(19,19,22,0.6)', border: '1px solid rgba(237,233,227,0.06)',
-                                borderRadius: '14px', padding: '1.1rem',
-                                transition: 'border-color 0.2s, transform 0.15s',
-                            }}
-                                onMouseEnter={e => { e.currentTarget.style.borderColor = `${item.color}40`; e.currentTarget.style.transform = 'translateY(-2px)'; }}
-                                onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(237,233,227,0.06)'; e.currentTarget.style.transform = 'translateY(0)'; }}
-                            >
-                                <item.Icon size={16} style={{ color: item.color, marginBottom: '0.6rem' }} />
-                                <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#ede9e3', marginBottom: '2px' }}>{item.label}</div>
-                                <div style={{ fontSize: '0.65rem', color: 'rgba(237,233,227,0.25)' }}>{item.desc}</div>
-                            </Link>
-                        ))}
-                    </div>
-
                 </div>
 
-                {/* ── Right sidebar ── */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                {/* ── RIGHT SIDEBAR ── */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+
+                    {/* Today calendar */}
+                    <TodayCalendarWidget uid={uid} />
 
                     {/* Session templates */}
                     <SessionTemplates />
@@ -972,177 +1082,37 @@ function AuthenticatedHome({ uid, displayName, email }: { uid: string; displayNa
                     {/* Smart suggestions */}
                     <SmartSuggestions sessionLogs={recentSessions} />
 
-                    {/* Daily motivation */}
-                    <div style={{
-                        background: 'linear-gradient(145deg, rgba(200,169,96,0.07), rgba(94,234,212,0.04))',
-                        border: '1px solid rgba(200,169,96,0.12)',
-                        borderRadius: '18px', padding: '1.4rem',
-                    }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '0.85rem' }}>
-                            <Sparkles size={13} style={{ color: '#c8a960' }} />
-                            <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'rgba(237,233,227,0.35)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                                Motivation du jour
-                            </span>
-                        </div>
-                        <p style={{
-                            margin: '0 0 0.6rem', fontSize: '0.88rem', fontWeight: 500,
-                            color: 'rgba(237,233,227,0.7)', lineHeight: 1.55, fontStyle: 'italic',
-                        }}>
+                    {/* Motivation quote — minimal */}
+                    <div style={{ padding: '1.1rem 1.2rem', borderRadius: 16, borderLeft: '2px solid rgba(200,169,96,0.3)', background: 'rgba(200,169,96,0.03)' }}>
+                        <p style={{ margin: '0 0 6px', fontSize: '0.8rem', fontWeight: 500, color: 'rgba(237,233,227,0.55)', lineHeight: 1.5, fontStyle: 'italic' }}>
                             "{todayQuote.text}"
                         </p>
-                        <div style={{ fontSize: '0.72rem', color: '#c8a960', fontWeight: 600 }}>
-                            — {todayQuote.author}
-                        </div>
+                        <div style={{ fontSize: '0.62rem', color: '#c8a960', fontWeight: 700 }}>— {todayQuote.author}</div>
                     </div>
 
                     {/* Online friends */}
                     {onlineFriends.length > 0 && (
-                        <div style={{
-                            background: 'rgba(19,19,22,0.6)', border: '1px solid rgba(237,233,227,0.06)',
-                            borderRadius: '18px', padding: '1.25rem',
-                        }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.75rem' }}>
-                                <div style={{ width: 3, height: 14, borderRadius: 2, background: '#10b981' }} />
-                                <h3 style={{ fontSize: '0.78rem', fontWeight: 700, color: 'rgba(237,233,227,0.35)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0, flex: 1 }}>
-                                    En ligne
-                                </h3>
-                                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#10b981', animation: 'pulse-dot 1.5s infinite' }} />
+                        <div className="home-card" style={{ padding: '1.1rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '0.6rem' }}>
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block', animation: 'pulse-dot 1.5s infinite' }} />
+                                <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'rgba(237,233,227,0.3)', textTransform: 'uppercase', letterSpacing: '0.09em' }}>En ligne</span>
                             </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                                {onlineFriends.map((f: any) => (
-                                    <div key={f.uid}
-                                        onClick={() => router.push(`/user/${f.uid}`)}
-                                        style={{
-                                            display: 'flex', alignItems: 'center', gap: '10px',
-                                            padding: '8px 10px', borderRadius: '10px', cursor: 'pointer',
-                                            transition: 'background 0.15s',
-                                        }}
-                                        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(237,233,227,0.04)')}
-                                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                                    >
-                                        <div style={{ position: 'relative' }}>
-                                            <Avatar uid={f.uid} avatarUrl={f.avatar_url} avatarStyle={f.avatar_style} size={32}
-                                                style={{ borderRadius: '50%' }}
-                                            />
-                                            <div style={{
-                                                position: 'absolute', bottom: -1, right: -1,
-                                                width: 9, height: 9, borderRadius: '50%',
-                                                background: '#10b981', border: '2px solid #0b0b0d',
-                                            }} />
-                                        </div>
-                                        <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'rgba(237,233,227,0.7)' }}>
-                                            {f.full_name || f.email?.split('@')[0] || 'Utilisateur'}
-                                        </span>
+                            {onlineFriends.map((f: any) => (
+                                <div key={f.uid} className="home-friend" onClick={() => router.push(`/user/${f.uid}`)}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 8px', borderRadius: 9, cursor: 'pointer', transition: 'background 0.15s' }}>
+                                    <div style={{ position: 'relative', flexShrink: 0 }}>
+                                        <Avatar uid={f.uid} avatarUrl={f.avatar_url} avatarStyle={f.avatar_style} size={28} style={{ borderRadius: '50%' }} />
+                                        <div style={{ position: 'absolute', bottom: -1, right: -1, width: 8, height: 8, borderRadius: '50%', background: '#10b981', border: '1.5px solid #0b0b0d' }} />
                                     </div>
-                                ))}
-                            </div>
+                                    <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'rgba(237,233,227,0.65)' }}>
+                                        {f.full_name || f.email?.split('@')[0] || 'Utilisateur'}
+                                    </span>
+                                </div>
+                            ))}
                         </div>
                     )}
-
-                    {/* Streak flame card */}
-                    <div style={{
-                        background: streak > 0
-                            ? 'linear-gradient(145deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))'
-                            : 'rgba(19,19,22,0.6)',
-                        border: `1px solid ${streak > 0 ? 'rgba(245,158,11,0.15)' : 'rgba(237,233,227,0.06)'}`,
-                        borderRadius: '18px', padding: '1.4rem',
-                        textAlign: 'center',
-                    }}>
-                        <div style={{ fontSize: '2.2rem', marginBottom: '0.4rem' }}>
-                            {streak >= 7 ? '🔥' : streak > 0 ? '🕯️' : '💤'}
-                        </div>
-                        <div style={{
-                            fontSize: '1.4rem', fontWeight: 900, color: streak > 0 ? '#fbbf24' : 'rgba(237,233,227,0.15)',
-                            fontFamily: 'var(--font-display)', letterSpacing: '-0.03em',
-                        }}>
-                            {streak > 0 ? `${streak} jour${streak > 1 ? 's' : ''}` : 'Pas de streak'}
-                        </div>
-                        <div style={{ fontSize: '0.72rem', color: 'rgba(237,233,227,0.3)', marginTop: '0.25rem' }}>
-                            {streak >= 30 ? 'Inarrêtable ! 🌋' : streak >= 7 ? 'En feu ! Continue comme ça' : streak > 0 ? 'Reviens chaque jour pour maintenir ta série' : 'Connecte-toi chaque jour pour démarrer'}
-                        </div>
-                    </div>
-
-                    {/* Recent activity mini */}
-                    <div style={{
-                        background: 'rgba(19,19,22,0.6)', border: '1px solid rgba(237,233,227,0.06)',
-                        borderRadius: '18px', padding: '1.25rem',
-                    }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <div style={{ width: 3, height: 14, borderRadius: 2, background: '#5eead4' }} />
-                                <h3 style={{ fontSize: '0.78rem', fontWeight: 700, color: 'rgba(237,233,227,0.35)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
-                                    Activité récente
-                                </h3>
-                            </div>
-                            <Link href="/profile?tab=activity" style={{ fontSize: '0.7rem', color: '#5eead4', fontWeight: 600, textDecoration: 'none' }}>
-                                Tout voir
-                            </Link>
-                        </div>
-
-                        {recentSessions.length === 0 ? (
-                            <div style={{
-                                padding: '1.25rem', textAlign: 'center', borderRadius: '12px',
-                                background: 'rgba(237,233,227,0.02)',
-                            }}>
-                                <Timer size={18} style={{ color: 'rgba(237,233,227,0.1)', marginBottom: '0.4rem' }} />
-                                <p style={{ color: 'rgba(237,233,227,0.2)', margin: 0, fontSize: '0.75rem' }}>Aucune session récente</p>
-                            </div>
-                        ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                                {recentSessions.slice(0, 4).map((s: any) => {
-                                    const dt = s.started_at?.toDate?.();
-                                    const typeColors: Record<string, string> = { objective: '#c8a960', project: '#5eead4', accountability: '#f59e0b' };
-                                    const col = typeColors[s.type] || '#c8a960';
-                                    return (
-                                        <div key={s.id} style={{
-                                            display: 'flex', alignItems: 'center', gap: '10px',
-                                            padding: '7px 10px', borderRadius: '10px',
-                                            background: 'rgba(237,233,227,0.02)',
-                                        }}>
-                                            <div style={{ width: 5, height: 5, borderRadius: '50%', background: col, flexShrink: 0 }} />
-                                            <div style={{ flex: 1, minWidth: 0 }}>
-                                                <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'rgba(237,233,227,0.6)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                                    {s.title || 'Session'}
-                                                </div>
-                                                <div style={{ fontSize: '0.62rem', color: 'rgba(237,233,227,0.2)' }}>
-                                                    {dt ? dt.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) : ''} · {fmtH(s.duration_hours || 0)}
-                                                </div>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </div>
-
                 </div>
             </div>
-
-            {/* ── Keyframes ── */}
-            <style>{`
-                @keyframes fadeIn {
-                    from { opacity: 0; transform: translateY(12px); }
-                    to   { opacity: 1; transform: translateY(0); }
-                }
-                @keyframes pulse-dot {
-                    0%,100% { opacity: 1; transform: scale(1); }
-                    50%     { opacity: 0.4; transform: scale(0.7); }
-                }
-                @keyframes spin {
-                    to { transform: rotate(360deg); }
-                }
-                @media (max-width: 768px) {
-                    div[style*="grid-template-columns: 1fr 320px"] {
-                        grid-template-columns: 1fr !important;
-                    }
-                    div[style*="grid-template-columns: repeat(4, 1fr)"] {
-                        grid-template-columns: repeat(2, 1fr) !important;
-                    }
-                    div[style*="grid-template-columns: repeat(3, 1fr)"] {
-                        grid-template-columns: 1fr 1fr !important;
-                    }
-                }
-            `}</style>
         </div>
     );
 }
