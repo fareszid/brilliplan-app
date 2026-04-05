@@ -306,6 +306,9 @@ function ProjectDetailContent() {
     const chatFileInputRef = useRef<HTMLInputElement>(null);
 
     const [activeTab, setActiveTab] = useTabParam<string>('tab', 'overview');
+    const [chatUnread, setChatUnread] = useState(0);
+    const activeTabRef = useRef(activeTab);
+    const lastChatReadRef = useRef<number>(0); // set on mount from localStorage
     const [loading, setLoading] = useState(true);
 
     const [showEditObjModal, setShowEditObjModal] = useState(false);
@@ -467,6 +470,22 @@ function ProjectDetailContent() {
 
 
 
+    // Keep ref in sync + clear unread + scroll to bottom when visiting chat tab
+    useEffect(() => {
+        activeTabRef.current = activeTab;
+        if (activeTab === 'chat') {
+            setChatUnread(0);
+            const now = Date.now();
+            lastChatReadRef.current = now;
+            localStorage.setItem(`chat_read_proj_${id}`, String(now));
+            // The div mounts after this render — wait one tick then scroll
+            setTimeout(() => {
+                const chatDiv = document.getElementById('chat-messages');
+                if (chatDiv) chatDiv.scrollTop = chatDiv.scrollHeight;
+            }, 80);
+        }
+    }, [activeTab, id]);
+
     useEffect(() => {
         if (!user || !id) return;
 
@@ -539,14 +558,33 @@ function ProjectDetailContent() {
         const messagesRef = collection(db, 'projects', id as string, 'messages');
         const qMessages = query(messagesRef, orderBy('created_at', 'asc'));
 
+        const lsKey = `chat_read_proj_${id}`;
+        // If never visited, treat now as the baseline so history doesn't count as unread
+        const stored = parseInt(localStorage.getItem(lsKey) || '0', 10);
+        lastChatReadRef.current = stored || Date.now();
+        if (!stored) localStorage.setItem(lsKey, String(lastChatReadRef.current));
+
+        let initialLoad = true;
         const unsubscribe = onSnapshot(qMessages, (snapshot) => {
-            const msgs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+            const msgs: any[] = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
             setMessages(msgs);
 
-            // Auto-scroll chat
+            // Count unread from others since last read (only when not on chat tab)
+            if (activeTabRef.current !== 'chat') {
+                const unread = msgs.filter(m =>
+                    m.sender_id !== user?.uid &&
+                    (m.created_at?.toMillis?.() ?? 0) > lastChatReadRef.current
+                ).length;
+                setChatUnread(unread);
+            }
+
+            // Auto-scroll to bottom on initial load or when on chat tab
             setTimeout(() => {
                 const chatDiv = document.getElementById('chat-messages');
-                if (chatDiv) chatDiv.scrollTop = chatDiv.scrollHeight;
+                if (chatDiv && (initialLoad || activeTabRef.current === 'chat')) {
+                    chatDiv.scrollTop = chatDiv.scrollHeight;
+                }
+                initialLoad = false;
             }, 100);
         });
 
@@ -2855,8 +2893,13 @@ function ProjectDetailContent() {
                     { id: 'sprints', label: 'Sprints' },
                     { id: 'roadmap', label: 'Roadmap' },
                 ].map(tab => (
-                    <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => setActiveTab(tab.id)}>
+                    <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => setActiveTab(tab.id)} style={{ position: 'relative' }}>
                         {tab.label}
+                        {tab.id === 'chat' && chatUnread > 0 && activeTab !== 'chat' && (
+                            <span style={{ position: 'absolute', top: 2, right: 2, background: '#c8a960', color: '#0b0b0d', borderRadius: 99, minWidth: 14, height: 14, padding: '0 3px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.5rem', fontWeight: 800 }}>
+                                {chatUnread > 9 ? '9+' : chatUnread}
+                            </span>
+                        )}
                     </button>
                 ))}
             </div>
@@ -2912,7 +2955,12 @@ function ProjectDetailContent() {
                         onMouseLeave={e => { if (!active) { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.45)'; }}}
                         >
                             <Icon size={15} style={{ flexShrink: 0, opacity: active ? 1 : 0.6 }} />
-                            <span>{label}</span>
+                            <span style={{ flex: 1 }}>{label}</span>
+                            {(id as string) === 'chat' && chatUnread > 0 && activeTab !== 'chat' && (
+                                <span style={{ background: '#c8a960', color: '#0b0b0d', borderRadius: 99, minWidth: 16, height: 16, padding: '0 4px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.58rem', fontWeight: 800, flexShrink: 0 }}>
+                                    {chatUnread > 9 ? '9+' : chatUnread}
+                                </span>
+                            )}
                         </button>
                     );
                 })}

@@ -12,7 +12,7 @@ import { useLocale } from '@/context/LocaleContext';
 import Avatar from '@/components/Avatar';
 import { useCall } from '@/context/CallContext';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { MessageCircle, Send, Users, Phone, Video, Search, Paperclip, X, FileText, Image as ImageIcon, Download } from 'lucide-react';
+import { MessageCircle, Send, Users, Phone, Video, Search, Paperclip, X, FileText, Image as ImageIcon, Download, Target, Briefcase } from 'lucide-react';
 import { validateFileUpload } from '@/lib/uploadValidation';
 import { useBlock } from '@/context/BlockContext';
 
@@ -258,6 +258,16 @@ interface ConvPreview {
     lastRead?:       boolean;
 }
 
+interface SalonPreview {
+    id:           string;
+    type:         'objective' | 'project';
+    title:        string;
+    lastMessage?: string;
+    lastTime?:    Date;
+    lastSenderName?: string;
+    unread:       number;
+}
+
 // ── Design tokens ─────────────────────────────────────────────────────────────
 // Transparent bases let the global gradient orbs from layout.tsx show through,
 // matching the background colour visible around the top navbar.
@@ -321,6 +331,9 @@ function MessagesContent() {
     const [presenceMap, setPresenceMap] = useState<Record<string, number>>({}); // uid -> last_seen ms
     const [now, setNow] = useState(Date.now());
     const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    const [salonPreviews, setSalonPreviews] = useState<SalonPreview[]>([]);
+    const salonUnsubsRef = useRef<(() => void)[]>([]);
 
     const { startCall }   = useCall();
     const QUICK_REACTIONS = ['👍', '🔥', '🚀', '❤️', '🙌', '👀'];
@@ -405,6 +418,75 @@ function MessagesContent() {
         });
         return () => unsub();
     }, [activeConv]);
+
+    // ── Salon chats (objectives + projects) ──────────────────────────────
+    useEffect(() => {
+        if (!user) return;
+
+        const load = async () => {
+            // Fetch all memberships
+            const [memSnap, projMemSnap] = await Promise.all([
+                getDocs(query(collection(db, 'memberships'), where('user_id', '==', user.uid))),
+                getDocs(query(collection(db, 'project_memberships'), where('user_id', '==', user.uid))),
+            ]);
+
+            const objIds  = memSnap.docs.map(d => d.data().objective_id as string).filter(Boolean);
+            const projIds = projMemSnap.docs.map(d => d.data().project_id as string).filter(Boolean);
+
+            // Unsub old listeners
+            salonUnsubsRef.current.forEach(u => u());
+            salonUnsubsRef.current = [];
+
+            const salonsMap = new Map<string, SalonPreview>();
+
+            // Helper: attach listener for a room's messages subcollection
+            const attachListener = (roomId: string, type: 'objective' | 'project', title: string) => {
+                const colPath = type === 'objective' ? 'objectives' : 'projects';
+                const q = query(
+                    collection(db, colPath, roomId, 'messages'),
+                    orderBy('created_at', 'desc'),
+                    limit(1),
+                );
+                const unsub = onSnapshot(q, snap => {
+                    const last = snap.docs[0]?.data();
+                    // Count unread: messages not sent by me, created after last_read_at (use local session — just track by sender != me)
+                    const preview: SalonPreview = {
+                        id:              roomId,
+                        type,
+                        title,
+                        lastMessage:     last?.file_url ? (last?.content || '📎 Fichier') : (last?.content ?? undefined),
+                        lastTime:        last?.created_at?.toDate?.() ?? undefined,
+                        lastSenderName:  last?.sender_name ?? undefined,
+                        unread:          salonsMap.get(roomId)?.unread ?? 0,
+                    };
+                    salonsMap.set(roomId, preview);
+                    setSalonPreviews(Array.from(salonsMap.values()).sort(
+                        (a, b) => (b.lastTime?.getTime() ?? 0) - (a.lastTime?.getTime() ?? 0),
+                    ));
+                });
+                salonUnsubsRef.current.push(unsub);
+            };
+
+            // Load titles for objectives
+            await Promise.all(objIds.slice(0, 20).map(async (oid) => {
+                try {
+                    const d = await getDoc(doc(db, 'objectives', oid));
+                    if (d.exists()) attachListener(oid, 'objective', d.data().title || 'Objectif');
+                } catch { /* skip */ }
+            }));
+
+            // Load titles for projects
+            await Promise.all(projIds.slice(0, 20).map(async (pid) => {
+                try {
+                    const d = await getDoc(doc(db, 'projects', pid));
+                    if (d.exists()) attachListener(pid, 'project', d.data().name || d.data().title || 'Projet');
+                } catch { /* skip */ }
+            }));
+        };
+
+        load();
+        return () => { salonUnsubsRef.current.forEach(u => u()); };
+    }, [user?.uid]);
 
     // ── Real-time message previews for each conversation ─────────────────
     useEffect(() => {
@@ -798,6 +880,74 @@ function MessagesContent() {
                                     );
                                 })
                             )}
+
+                            {/* ── Salon chats section ── */}
+                            {(() => {
+                                const filteredSalons = salonPreviews.filter(s =>
+                                    !search.trim() || s.title.toLowerCase().includes(search.toLowerCase())
+                                );
+                                if (filteredSalons.length === 0) return null;
+                                return (
+                                    <>
+                                        <div style={{ padding: '10px 4px 4px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                            <div style={{ flex: 1, height: 1, background: C.border }} />
+                                            <span style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.08em', color: C.textMuted, textTransform: 'uppercase', flexShrink: 0 }}>Salons</span>
+                                            <div style={{ flex: 1, height: 1, background: C.border }} />
+                                        </div>
+                                        {filteredSalons.map(salon => {
+                                            const Icon = salon.type === 'objective' ? Target : Briefcase;
+                                            const accentCol = salon.type === 'objective' ? '#c8a960' : '#818cf8';
+                                            const href = salon.type === 'objective'
+                                                ? `/objective/${salon.id}?tab=chat`
+                                                : `/project/${salon.id}?tab=chat`;
+                                            return (
+                                                <div
+                                                    key={salon.id}
+                                                    className="dm-conv-card"
+                                                    onClick={() => router.push(href)}
+                                                    style={{
+                                                        display: 'flex', alignItems: 'center', gap: 11,
+                                                        padding: '9px 11px', borderRadius: 13,
+                                                        border: `1px solid ${C.borderCard}`,
+                                                        background: 'rgba(255,255,255,0.02)',
+                                                    }}
+                                                >
+                                                    {/* Icon badge */}
+                                                    <div style={{ position: 'relative', flexShrink: 0 }}>
+                                                        <div style={{ width: 38, height: 38, borderRadius: 12, background: `${accentCol}14`, border: `1px solid ${accentCol}30`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                            <Icon size={16} style={{ color: accentCol }} />
+                                                        </div>
+                                                        {salon.unread > 0 && (
+                                                            <span style={{ position: 'absolute', top: -3, right: -3, width: 14, height: 14, borderRadius: '50%', background: accentCol, border: '2px solid #0b0b0d', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.5rem', fontWeight: 800, color: '#0b0b0d' }}>
+                                                                {salon.unread > 9 ? '9+' : salon.unread}
+                                                            </span>
+                                                        )}
+                                                    </div>
+
+                                                    {/* Text */}
+                                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                                        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 3 }}>
+                                                            <span style={{ fontWeight: salon.unread > 0 ? 700 : 500, fontSize: '0.835rem', color: salon.unread > 0 ? C.textPrimary : C.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 148 }}>
+                                                                {salon.title}
+                                                            </span>
+                                                            {salon.lastTime && (
+                                                                <span style={{ fontSize: '0.62rem', flexShrink: 0, marginLeft: 6, color: C.textMuted }}>
+                                                                    {relativeTime(salon.lastTime)}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <span style={{ fontSize: '0.73rem', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: salon.unread > 0 ? C.textSecondary : C.textMuted, fontWeight: salon.unread > 0 ? 500 : 400, fontStyle: salon.lastMessage ? 'normal' : 'italic' }}>
+                                                            {salon.lastSenderName && salon.lastMessage
+                                                                ? `${salon.lastSenderName}: ${salon.lastMessage}`
+                                                                : salon.lastMessage ?? 'Aucun message'}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </>
+                                );
+                            })()}
                         </div>
                     </div>
 
