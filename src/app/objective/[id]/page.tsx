@@ -433,7 +433,7 @@ function ObjectiveDetailContent() {
             // Count unread from others since last read (only when not on chat tab)
             if (activeTabRef.current !== 'chat') {
                 const unread = msgs.filter(m =>
-                    m.sender_id !== user?.uid &&
+                    (m.user_id ?? m.sender_id) !== user?.uid &&
                     (m.created_at?.toMillis?.() ?? 0) > lastChatReadRef.current
                 ).length;
                 setChatUnread(unread);

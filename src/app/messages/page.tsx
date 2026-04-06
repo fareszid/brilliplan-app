@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useEffect, useRef, Suspense } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, Suspense } from 'react';
 import { db, storage } from '@/lib/firebase';
 import { ref as storageRef, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import {
     collection, query, where, getDocs, doc, getDoc, addDoc,
-    onSnapshot, orderBy, Timestamp, setDoc, limit, updateDoc, writeBatch, increment
+    onSnapshot, orderBy, Timestamp, setDoc, limit, updateDoc, writeBatch, increment, serverTimestamp
 } from 'firebase/firestore';
 import { useAuth } from '@/context/AuthContext';
 import { useLocale } from '@/context/LocaleContext';
@@ -331,9 +331,24 @@ function MessagesContent() {
     const [presenceMap, setPresenceMap] = useState<Record<string, number>>({}); // uid -> last_seen ms
     const [now, setNow] = useState(Date.now());
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const messagesContainerRef = useRef<HTMLDivElement>(null);
+    const dmInitialLoad = useRef(true);
 
     const [salonPreviews, setSalonPreviews] = useState<SalonPreview[]>([]);
     const salonUnsubsRef = useRef<(() => void)[]>([]);
+    const [activeSalon, setActiveSalon] = useState<SalonPreview | null>(null);
+    const [salonMessages, setSalonMessages] = useState<any[]>([]);
+    const [salonNewMsg, setSalonNewMsg] = useState('');
+    const [salonSending, setSalonSending] = useState(false);
+    const [salonError, setSalonError] = useState<string | null>(null);
+    const salonMessagesEndRef = useRef<HTMLDivElement>(null);
+    const salonContainerRef = useRef<HTMLDivElement>(null);
+    const salonInitialLoad = useRef(true);
+    // uid → profile cache for salon member avatars
+    const [salonProfiles, setSalonProfiles] = useState<Record<string, any>>({});
+    const salonProfilesRef = useRef<Record<string, any>>({});
+    // roomId → last-read timestamp ms (backed by localStorage)
+    const salonLastReadRef = useRef<Record<string, number>>({});
 
     const { startCall }   = useCall();
     const QUICK_REACTIONS = ['👍', '🔥', '🚀', '❤️', '🙌', '👀'];
@@ -411,13 +426,37 @@ function MessagesContent() {
     // ── Real-time messages ──────────────────────────────────────────────────
     useEffect(() => {
         if (!activeConv) { setMessages([]); return; }
-        const q     = query(collection(db, 'direct_messages', activeConv, 'messages'), orderBy('created_at', 'asc'));
+        dmInitialLoad.current = true;
+        const q = query(collection(db, 'direct_messages', activeConv, 'messages'), orderBy('created_at', 'asc'));
         const unsub = onSnapshot(q, snap => {
             setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-            setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
         });
         return () => unsub();
     }, [activeConv]);
+
+    // Scroll DM panel: instant on open, smooth for new messages
+    useLayoutEffect(() => {
+        const el = messagesContainerRef.current;
+        if (!el) return;
+        if (dmInitialLoad.current) {
+            el.scrollTop = el.scrollHeight;
+            dmInitialLoad.current = false;
+        } else {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [messages]);
+
+    // Scroll salon panel: instant on open, smooth for new messages
+    useLayoutEffect(() => {
+        const el = salonContainerRef.current;
+        if (!el) return;
+        if (salonInitialLoad.current) {
+            el.scrollTop = el.scrollHeight;
+            salonInitialLoad.current = false;
+        } else {
+            salonMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [salonMessages]);
 
     // ── Salon chats (objectives + projects) ──────────────────────────────
     useEffect(() => {
@@ -442,22 +481,48 @@ function MessagesContent() {
             // Helper: attach listener for a room's messages subcollection
             const attachListener = (roomId: string, type: 'objective' | 'project', title: string) => {
                 const colPath = type === 'objective' ? 'objectives' : 'projects';
+                const localKey = `chat_read_${type === 'objective' ? 'obj' : 'proj'}_${roomId}`;
+                // Initialise lastRead from localStorage
+                const storedMs = parseInt(localStorage.getItem(localKey) || '0');
+                salonLastReadRef.current[roomId] = storedMs;
+
                 const q = query(
                     collection(db, colPath, roomId, 'messages'),
                     orderBy('created_at', 'desc'),
                     limit(1),
                 );
-                const unsub = onSnapshot(q, snap => {
+                const unsub = onSnapshot(q, async snap => {
                     const last = snap.docs[0]?.data();
-                    // Count unread: messages not sent by me, created after last_read_at (use local session — just track by sender != me)
+                    const lastMsgMs = last?.created_at?.toMillis?.() ?? 0;
+                    const lastReadMs = salonLastReadRef.current[roomId] ?? 0;
+
+                    // Compute unread count only if last message is newer than lastRead and not mine
+                    let unreadCount = salonsMap.get(roomId)?.unread ?? 0;
+                    if (lastMsgMs > lastReadMs && (last?.user_id ?? last?.sender_id) !== user.uid) {
+                        try {
+                            const unreadSnap = await getDocs(query(
+                                collection(db, colPath, roomId, 'messages'),
+                                where('created_at', '>', Timestamp.fromMillis(lastReadMs)),
+                                orderBy('created_at', 'asc'),
+                            ));
+                            unreadCount = unreadSnap.docs.filter(d => {
+                                const data = d.data();
+                                return (data.user_id ?? data.sender_id) !== user.uid;
+                            }).length;
+                        } catch { unreadCount = 1; }
+                    } else if (lastMsgMs <= lastReadMs || (last && (last.user_id ?? last.sender_id) === user.uid)) {
+                        // Last message is mine or already read
+                        unreadCount = salonsMap.get(roomId)?.unread ?? 0;
+                    }
+
                     const preview: SalonPreview = {
-                        id:              roomId,
+                        id:             roomId,
                         type,
                         title,
-                        lastMessage:     last?.file_url ? (last?.content || '📎 Fichier') : (last?.content ?? undefined),
-                        lastTime:        last?.created_at?.toDate?.() ?? undefined,
-                        lastSenderName:  last?.sender_name ?? undefined,
-                        unread:          salonsMap.get(roomId)?.unread ?? 0,
+                        lastMessage:    last?.file_url ? (last?.content || '📎 Fichier') : (last?.content ?? undefined),
+                        lastTime:       last?.created_at?.toDate?.() ?? undefined,
+                        lastSenderName: last?.user_name ?? last?.sender_name ?? undefined,
+                        unread:         unreadCount,
                     };
                     salonsMap.set(roomId, preview);
                     setSalonPreviews(Array.from(salonsMap.values()).sort(
@@ -555,6 +620,54 @@ function MessagesContent() {
         return () => unsub();
     }, [activeProfile?.id]);
 
+    // ── Real-time salon messages ──────────────────────────────────────────
+    useEffect(() => {
+        if (!activeSalon) { setSalonMessages([]); setSalonError(null); return; }
+        const colPath = activeSalon.type === 'objective' ? 'objectives' : 'projects';
+        const q = query(collection(db, colPath, activeSalon.id, 'messages'), orderBy('created_at', 'asc'));
+        // Clear profile cache when switching salons
+        salonProfilesRef.current = {};
+        setSalonProfiles({});
+        setSalonError(null);
+
+        // Mark as read immediately when salon is opened
+        const markSalonRead = () => {
+            const localKey = `chat_read_${activeSalon.type === 'objective' ? 'obj' : 'proj'}_${activeSalon.id}`;
+            const nowMs = Date.now();
+            localStorage.setItem(localKey, String(nowMs));
+            salonLastReadRef.current[activeSalon.id] = nowMs;
+            setSalonPreviews(prev => prev.map(s => s.id === activeSalon.id ? { ...s, unread: 0 } : s));
+        };
+        markSalonRead();
+
+        salonInitialLoad.current = true;
+        const unsub = onSnapshot(q, async snap => {
+            const msgs: any[] = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            setSalonMessages(msgs);
+            setSalonError(null);
+            // Keep lastRead up-to-date while viewing
+            markSalonRead();
+
+            // Fetch profiles for any unknown senders
+            const unknownUids = [...new Set(msgs.map((m: any) => m.user_id ?? m.sender_id).filter(Boolean))]
+                .filter((uid: string) => uid && !salonProfilesRef.current[uid]);
+
+            if (unknownUids.length > 0) {
+                await Promise.all(unknownUids.map(async (uid: string) => {
+                    try {
+                        const d = await getDoc(doc(db, 'users', uid));
+                        if (d.exists()) salonProfilesRef.current[uid] = { id: d.id, ...d.data() };
+                    } catch { /* skip */ }
+                }));
+                setSalonProfiles({ ...salonProfilesRef.current });
+            }
+        }, (err) => {
+            console.error('Salon messages snapshot error:', err);
+            setSalonError('Impossible de charger les messages. Vérifiez que vous êtes bien membre de ce salon.');
+        });
+        return () => unsub();
+    }, [activeSalon?.id]);
+
     // Refresh "now" every 30s so online/offline transitions even without new snapshots
     useEffect(() => {
         const t = setInterval(() => setNow(Date.now()), 30_000);
@@ -581,6 +694,7 @@ function MessagesContent() {
     const selectConversation = (conv: ConvPreview) => {
         setActiveConv(conv.convId);
         setActiveProfile(conv.friendProfile);
+        setActiveSalon(null);
         markAsRead(conv.convId);
     };
 
@@ -641,6 +755,31 @@ function MessagesContent() {
             if (!hasReacted) updated[emoji] = [...(updated[emoji] || []), user.uid];
             await updateDoc(msgRef, { reactions: updated });
         } catch (err) { console.error('Error toggling reaction', err); }
+    };
+
+    const handleSalonSend = async (e: React.SyntheticEvent) => {
+        e.preventDefault();
+        if (!salonNewMsg.trim() || !activeSalon || !user || salonSending) return;
+        setSalonSending(true);
+        try {
+            const colPath = activeSalon.type === 'objective' ? 'objectives' : 'projects';
+            const userDoc = await getDoc(doc(db, 'users', user.uid));
+            const userName = userDoc.exists() ? (userDoc.data().full_name || 'Moi') : 'Moi';
+            await addDoc(collection(db, colPath, activeSalon.id, 'messages'), {
+                content: salonNewMsg.trim(),
+                user_id: user.uid,
+                user_name: userName,
+                created_at: serverTimestamp(),
+                reactions: {},
+                pinned: false,
+            });
+            setSalonNewMsg('');
+        } catch (err: any) {
+            console.error('Error sending salon message', err);
+            if (err?.code === 'permission-denied') {
+                setSalonError('Envoi refusé : vous n\'êtes plus membre de ce salon.');
+            }
+        } finally { setSalonSending(false); }
     };
 
     if (!user) {
@@ -743,6 +882,13 @@ function MessagesContent() {
                 /* ── Timestamp: fade in on row hover ───────────────────── */
                 .dm-msg-row .dm-ts { opacity: .55; transition: opacity .15s; }
                 .dm-msg-row:hover .dm-ts { opacity: 1; }
+
+                /* ── Unread pulse dot ──────────────────────────────────── */
+                @keyframes dm-unread-pulse {
+                    0%, 100% { transform: scale(1); opacity: 1; }
+                    50% { transform: scale(1.5); opacity: 0.6; }
+                }
+                .dm-unread-dot { animation: dm-unread-pulse 2s ease-in-out infinite; }
             `}</style>
 
             <div style={{ height: 'calc(100vh - 6.5rem)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -813,9 +959,10 @@ function MessagesContent() {
                                                 display: 'flex', alignItems: 'center', gap: 11,
                                                 padding: '9px 11px',
                                                 borderRadius: 13,
-                                                border: `1px solid ${isActive ? C.accentBorder : C.borderCard}`,
-                                                background: isActive ? C.accentGlow : 'rgba(255,255,255,0.02)',
-                                                boxShadow: isActive ? `inset 0 1px 0 rgba(200,169,96,.07)` : 'none',
+                                                border: `1px solid ${isActive ? C.accentBorder : hasUnread ? 'rgba(200,169,96,0.2)' : C.borderCard}`,
+                                                background: isActive ? C.accentGlow : hasUnread ? 'rgba(200,169,96,0.04)' : 'rgba(255,255,255,0.02)',
+                                                boxShadow: isActive ? `inset 0 1px 0 rgba(200,169,96,.07)` : hasUnread ? 'inset 3px 0 0 rgba(200,169,96,0.6)' : 'none',
+                                                position: 'relative',
                                             }}
                                         >
                                             {/* Avatar with gradient ring when active */}
@@ -831,7 +978,7 @@ function MessagesContent() {
                                                 </div>
                                                 {(() => {
                                                     const isOnline = (presenceMap[conv.friendUid] ?? 0) > 0 && (now - presenceMap[conv.friendUid]) < 2 * 60 * 1000;
-                                                    if (hasUnread) return <span style={{ position: 'absolute', bottom: 0, right: 0, width: 9, height: 9, borderRadius: '50%', background: C.accent, border: '2px solid #0b0b0d', boxShadow: '0 0 5px rgba(200,169,96,.5)' }} />;
+                                                    if (hasUnread) return <span className="dm-unread-dot" style={{ position: 'absolute', bottom: 0, right: 0, width: 9, height: 9, borderRadius: '50%', background: C.accent, border: '2px solid #0b0b0d', boxShadow: '0 0 6px rgba(200,169,96,.7)' }} />;
                                                     if (isOnline) return <span style={{ position: 'absolute', bottom: 0, right: 0, width: 9, height: 9, borderRadius: '50%', background: C.online, border: '2px solid #0b0b0d' }} />;
                                                     return null;
                                                 })()}
@@ -844,7 +991,7 @@ function MessagesContent() {
                                                         {conv.friendProfile.full_name}
                                                     </span>
                                                     {conv.lastTime && (
-                                                        <span style={{ fontSize: '0.62rem', flexShrink: 0, marginLeft: 6, color: isActive ? '#c8a960' : C.textMuted, fontWeight: isActive ? 600 : 400 }}>
+                                                        <span style={{ fontSize: '0.62rem', flexShrink: 0, marginLeft: 6, color: hasUnread || isActive ? '#c8a960' : C.textMuted, fontWeight: hasUnread || isActive ? 700 : 400 }}>
                                                             {relativeTime(conv.lastTime)}
                                                         </span>
                                                     )}
@@ -897,19 +1044,18 @@ function MessagesContent() {
                                         {filteredSalons.map(salon => {
                                             const Icon = salon.type === 'objective' ? Target : Briefcase;
                                             const accentCol = salon.type === 'objective' ? '#c8a960' : '#818cf8';
-                                            const href = salon.type === 'objective'
-                                                ? `/objective/${salon.id}?tab=chat`
-                                                : `/project/${salon.id}?tab=chat`;
+                                            const isActiveSalon = activeSalon?.id === salon.id;
                                             return (
                                                 <div
                                                     key={salon.id}
                                                     className="dm-conv-card"
-                                                    onClick={() => router.push(href)}
+                                                    onClick={() => { setActiveSalon(salon); setActiveConv(null); setActiveProfile(null); }}
                                                     style={{
                                                         display: 'flex', alignItems: 'center', gap: 11,
                                                         padding: '9px 11px', borderRadius: 13,
-                                                        border: `1px solid ${C.borderCard}`,
-                                                        background: 'rgba(255,255,255,0.02)',
+                                                        border: `1px solid ${isActiveSalon ? accentCol + '55' : salon.unread > 0 ? accentCol + '33' : C.borderCard}`,
+                                                        background: isActiveSalon ? accentCol + '12' : salon.unread > 0 ? accentCol + '08' : 'rgba(255,255,255,0.02)',
+                                                        boxShadow: !isActiveSalon && salon.unread > 0 ? `inset 3px 0 0 ${accentCol}99` : 'none',
                                                     }}
                                                 >
                                                     {/* Icon badge */}
@@ -918,7 +1064,7 @@ function MessagesContent() {
                                                             <Icon size={16} style={{ color: accentCol }} />
                                                         </div>
                                                         {salon.unread > 0 && (
-                                                            <span style={{ position: 'absolute', top: -3, right: -3, width: 14, height: 14, borderRadius: '50%', background: accentCol, border: '2px solid #0b0b0d', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.5rem', fontWeight: 800, color: '#0b0b0d' }}>
+                                                            <span className="dm-unread-dot" style={{ position: 'absolute', top: -3, right: -3, minWidth: 14, height: 14, borderRadius: 99, background: accentCol, border: '2px solid #0b0b0d', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.5rem', fontWeight: 800, color: '#0b0b0d', padding: '0 3px' }}>
                                                                 {salon.unread > 9 ? '9+' : salon.unread}
                                                             </span>
                                                         )}
@@ -954,7 +1100,149 @@ function MessagesContent() {
                     {/* ═══════════════════ CHAT AREA ═══════════════════ */}
                     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
 
-                        {!activeConv ? (
+                        {activeSalon ? (
+                            /* ── Salon chat panel ── */
+                            <>
+                                {/* Header */}
+                                {(() => {
+                                    const Icon = activeSalon.type === 'objective' ? Target : Briefcase;
+                                    const accentCol = activeSalon.type === 'objective' ? '#c8a960' : '#818cf8';
+                                    const href = activeSalon.type === 'objective' ? `/objective/${activeSalon.id}?tab=chat` : `/project/${activeSalon.id}?tab=chat`;
+                                    return (
+                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 22px', borderBottom: `1px solid ${C.border}`, background: C.header, backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', flexShrink: 0 }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                <div style={{ width: 40, height: 40, borderRadius: 12, background: `${accentCol}18`, border: `1px solid ${accentCol}35`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                                    <Icon size={18} style={{ color: accentCol }} />
+                                                </div>
+                                                <div>
+                                                    <div style={{ fontWeight: 700, fontSize: '0.9rem', color: C.textPrimary, letterSpacing: '-0.015em', lineHeight: 1.2 }}>{activeSalon.title}</div>
+                                                    <div style={{ fontSize: '0.67rem', color: C.textMuted, marginTop: 3 }}>{activeSalon.type === 'objective' ? 'Objectif' : 'Projet'} · Chat en direct</div>
+                                                </div>
+                                            </div>
+                                            <button onClick={() => router.push(href)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 10, background: `${accentCol}14`, border: `1px solid ${accentCol}30`, color: accentCol, fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                                Ouvrir le salon →
+                                            </button>
+                                        </div>
+                                    );
+                                })()}
+
+                                {/* Messages */}
+                                <div ref={salonContainerRef} className="dm-canvas dm-scroll" style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 0 }}>
+                                    {salonError ? (
+                                        <div style={{ margin: 'auto', textAlign: 'center', maxWidth: 280 }}>
+                                            <div style={{ color: '#f87171', fontSize: '0.82rem', lineHeight: 1.5, padding: '12px 16px', background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 12 }}>{salonError}</div>
+                                        </div>
+                                    ) : salonMessages.length === 0 ? (
+                                        <div style={{ margin: 'auto', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Aucun message pour l'instant</div>
+                                    ) : (
+                                        salonMessages.map((msg, idx) => {
+                                            const senderId = msg.user_id ?? msg.sender_id;
+                                            const senderProfile = salonProfiles[senderId];
+                                            const isMe = senderId === user?.uid;
+                                            const senderName = senderProfile?.full_name ?? msg.user_name ?? msg.sender_name ?? '';
+                                            const time = msg.created_at?.toDate?.()?.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) ?? '';
+                                            const msgDate: Date | null = msg.created_at?.toDate?.() ?? null;
+                                            const prevMsg = salonMessages[idx - 1];
+                                            const nextMsg = salonMessages[idx + 1];
+                                            const prevSenderId = prevMsg?.user_id ?? prevMsg?.sender_id;
+                                            const nextSenderId = nextMsg?.user_id ?? nextMsg?.sender_id;
+                                            const sameAsPrev = prevSenderId === senderId;
+                                            const sameAsNext = nextSenderId === senderId;
+                                            const prevDate: Date | null = prevMsg?.created_at?.toDate?.() ?? null;
+                                            const showDateSep = msgDate && (!prevDate || !isSameDay(prevDate, msgDate));
+                                            const br = isMe
+                                                ? `${sameAsPrev ? 6 : 18}px ${sameAsPrev ? 6 : 18}px ${sameAsNext ? 6 : 5}px 18px`
+                                                : `${sameAsPrev ? 6 : 18}px ${sameAsPrev ? 6 : 18}px 18px ${sameAsNext ? 6 : 5}px`;
+                                            return (
+                                                <div key={msg.id}>
+                                                    {showDateSep && msgDate && (
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: `${idx === 0 ? 0 : 26}px 0 18px` }}>
+                                                            <div style={{ flex: 1, height: 1, background: 'linear-gradient(to right, transparent, rgba(255,255,255,.05) 40%)' }} />
+                                                            <span style={{ fontSize: '0.62rem', color: C.textMuted, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', whiteSpace: 'nowrap', padding: '3px 11px', background: 'rgba(255,255,255,0.03)', border: `1px solid ${C.border}`, borderRadius: 99 }}>
+                                                                {formatDateLabel(msgDate)}
+                                                            </span>
+                                                            <div style={{ flex: 1, height: 1, background: 'linear-gradient(to left, transparent, rgba(255,255,255,.05) 40%)' }} />
+                                                        </div>
+                                                    )}
+                                                    <div style={{ marginTop: sameAsPrev ? 2 : 14 }}>
+                                                        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, flexDirection: isMe ? 'row-reverse' : 'row' }}>
+                                                            <div style={{ width: 28, flexShrink: 0 }}>
+                                                                {!isMe && !sameAsNext && (
+                                                                    <div onClick={() => router.push(`/user/${senderId}`)} style={{ cursor: 'pointer' }}>
+                                                                        <Avatar uid={senderId} avatarUrl={senderProfile?.avatar_url} avatarStyle={senderProfile?.avatar_style} size={28} />
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                            <div style={{ maxWidth: '62%', display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start' }}>
+                                                                {!isMe && !sameAsPrev && (
+                                                                    <div onClick={() => router.push(`/user/${senderId}`)} style={{ fontSize: '0.68rem', fontWeight: 600, color: C.textMuted, marginBottom: 3, paddingLeft: 2, cursor: 'pointer' }}
+                                                                        onMouseEnter={e => (e.currentTarget.style.color = '#c8a960')}
+                                                                        onMouseLeave={e => (e.currentTarget.style.color = C.textMuted)}
+                                                                    >{senderName}</div>
+                                                                )}
+                                                                {msg.content && (
+                                                                    <div className="dm-bubble" style={{
+                                                                        padding: '9px 14px', borderRadius: br,
+                                                                        fontSize: '0.875rem', lineHeight: 1.62, wordBreak: 'break-word',
+                                                                        ...(isMe ? {
+                                                                            background: `linear-gradient(145deg, ${C.meBubble1}, ${C.meBubble2})`,
+                                                                            color: '#fff',
+                                                                            boxShadow: '0 4px 18px rgba(79,70,229,.28), inset 0 1px 0 rgba(255,255,255,.18)',
+                                                                        } : {
+                                                                            background: C.themBubble, color: C.textPrimary,
+                                                                            border: `1px solid ${C.themBubbleBorder}`,
+                                                                        }),
+                                                                    }}>
+                                                                        <MessageContent content={msg.content} isMe={isMe} />
+                                                                    </div>
+                                                                )}
+                                                                {msg.file_url && (
+                                                                    <ChatFileCard fileUrl={msg.file_url} fileName={msg.file_name} fileType={msg.file_type} fileSize={msg.file_size} isMe={isMe} />
+                                                                )}
+                                                                {!sameAsNext && (
+                                                                    <div className="dm-ts" style={{ fontSize: '0.61rem', color: C.textMuted, marginTop: 4 }}>{time}</div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })
+                                    )}
+                                    <div ref={salonMessagesEndRef} />
+                                </div>
+
+                                {/* Input */}
+                                <form onSubmit={handleSalonSend} style={{ padding: '12px 20px 18px', background: C.inputBar, backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
+                                    <div className="dm-input-ring" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'rgba(255,255,255,0.04)', border: `1px solid rgba(255,255,255,0.08)`, borderRadius: 18, padding: '6px 6px 6px 14px' }}>
+                                        <input
+                                            type="text"
+                                            placeholder={`Message dans ${activeSalon.title}…`}
+                                            value={salonNewMsg}
+                                            onChange={e => setSalonNewMsg(e.target.value)}
+                                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSalonSend(e); } }}
+                                            autoFocus
+                                            style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontSize: '0.875rem', color: C.textPrimary, fontFamily: 'inherit', padding: '4px 0' }}
+                                        />
+                                        <button
+                                            type="submit"
+                                            disabled={salonSending || !salonNewMsg.trim()}
+                                            className="dm-send"
+                                            style={{
+                                                width: 38, height: 38, borderRadius: 13, border: 'none', flexShrink: 0,
+                                                background: salonNewMsg.trim() ? `linear-gradient(135deg,${C.meBubble1},${C.meBubble2})` : 'rgba(255,255,255,0.04)',
+                                                cursor: salonNewMsg.trim() ? 'pointer' : 'default',
+                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                opacity: salonSending ? 0.6 : 1,
+                                                boxShadow: salonNewMsg.trim() ? '0 4px 16px rgba(79,70,229,.32)' : 'none',
+                                            }}
+                                        >
+                                            <Send size={15} style={{ color: salonNewMsg.trim() ? '#fff' : C.textMuted, marginLeft: 1 }} />
+                                        </button>
+                                    </div>
+                                </form>
+                            </>
+                        ) : !activeConv ? (
                             /* ── Empty state ── */
                             <div className="dm-canvas" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 0 }}>
                                 {/* Layered rings */}
@@ -1018,7 +1306,7 @@ function MessagesContent() {
                                 )}
 
                                 {/* ── Messages canvas ── */}
-                                <div className="dm-canvas dm-scroll" style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 0 }}>
+                                <div ref={messagesContainerRef} className="dm-canvas dm-scroll" style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 0 }}>
 
                                     {messages.length === 0 ? (
                                         /* Conversation start state */
